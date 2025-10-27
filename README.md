@@ -77,9 +77,9 @@ playerConfig = gb.getFeatureValue("player-settings", {
 })
 ```
 
-## ⚠️ Important: Instance Management (SINGLETON PATTERN REQUIRED)
+### Important: Instance Management (SINGLETON PATTERN IS SUGGESTED)
 
-**CREATE ONE INSTANCE AND REUSE IT. DO NOT CREATE A NEW INSTANCE FOR EVERY REQUEST.**
+**Create one instance and resuse it.**
 
 ```brightscript
 ' Initialize ONCE when app starts

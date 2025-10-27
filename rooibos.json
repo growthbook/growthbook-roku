@@ -1,0 +1,15 @@
+{
+  "name": "GrowthBook Roku SDK Tests",
+  "version": "1.0.0",
+  "projectPath": ".",
+  "testsPath": "tests",
+  "sourceFilePattern": ["**/*.brs", "**/*.bs"],
+  "testFilePattern": ["**/tests/**/*Tests.brs"],
+  "isRecordingCodeCoverage": true,
+  "printTestTimes": true,
+  "showOnlyFailures": false,
+  "failFast": false,
+  "catchCrashes": true,
+  "lineWidth": 70
+}
+

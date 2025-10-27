@@ -4,10 +4,11 @@
   "description": "Official GrowthBook SDK for Roku/BrightScript applications",
   "main": "source/GrowthBook.brs",
   "scripts": {
-    "test": "node tests/test_growthbook.js",
+    "test": "echo 'Run: rooibos' && echo 'Or deploy to Roku device with: ./scripts/deploy.sh'",
+    "test:rooibos": "rooibos",
+    "test:coverage": "rooibos --coverage",
     "lint": "echo 'Install @rokucommunity/bsc to enable linting: npm install -g @rokucommunity/bsc'",
-    "deploy": "./scripts/deploy.sh",
-    "prepublishOnly": "npm test"
+    "deploy": "./scripts/deploy.sh"
   },
   "repository": {
     "type": "git",

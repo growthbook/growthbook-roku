@@ -1,0 +1,42 @@
+{
+  "name": "growthbook-roku",
+  "version": "1.0.0",
+  "description": "Official GrowthBook SDK for Roku/BrightScript applications",
+  "main": "source/GrowthBook.brs",
+  "scripts": {
+    "test": "node tests/test_growthbook.js",
+    "lint": "echo 'Install @rokucommunity/bsc to enable linting: npm install -g @rokucommunity/bsc'",
+    "deploy": "./scripts/deploy.sh",
+    "prepublishOnly": "npm test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/growthbook/growthbook-roku.git"
+  },
+  "keywords": [
+    "growthbook",
+    "roku",
+    "feature-flags",
+    "a/b-testing",
+    "experiments",
+    "brightscript",
+    "sdk"
+  ],
+  "author": "GrowthBook Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "files": [
+    "source/",
+    "docs/",
+    "examples/",
+    "tests/",
+    "README.md",
+    "LICENSE"
+  ],
+  "homepage": "https://github.com/growthbook/growthbook-roku#readme",
+  "bugs": {
+    "url": "https://github.com/growthbook/growthbook-roku/issues"
+  }
+}

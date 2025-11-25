@@ -37,8 +37,8 @@ function GrowthBook(config as object) as object
         _parseFeatures: GrowthBook__parseFeatures
         _evaluateConditions: GrowthBook__evaluateConditions
         _getAttributeValue: GrowthBook__getAttributeValue
-        _hash: GrowthBook__hash
-        _hashAttribute: GrowthBook__hashAttribute
+        _fnv1a32: GrowthBook__fnv1a32
+        _gbhash: GrowthBook__gbhash
         _trackExperiment: GrowthBook__trackExperiment
         _log: GrowthBook__log
     }
@@ -309,21 +309,42 @@ function GrowthBook__evaluateExperiment(rule as object, result as object) as obj
         namespace = rule.namespace
     end if
     
-    ' Hash the user for consistent variation assignment
-    userId = this.attributes.id
-    if userId = invalid
-        userId = "anonymous"
+    ' Get hash attribute (default to "id")
+    hashAttribute = "id"
+    if rule.hashAttribute <> invalid and rule.hashAttribute <> ""
+        hashAttribute = rule.hashAttribute
     end if
     
-    ' Calculate bucket
-    bucketKey = userId
-    if namespace <> invalid and type(namespace) = "roAssociativeArray"
-        if namespace.name <> invalid and namespace.value <> invalid
-            bucketKey = userId + "__" + namespace.name + "__" + namespace.value
-        end if
+    ' Get the attribute value to hash
+    hashValue = this._getAttributeValue(hashAttribute)
+    if hashValue = invalid or hashValue = ""
+        hashValue = "anonymous"
     end if
     
-    hash = this._hashAttribute(bucketKey)
+    ' Convert to string if needed
+    if type(hashValue) <> "roString"
+        hashValue = Str(hashValue)
+    end if
+    
+    ' Get seed (defaults to experiment key or empty string)
+    seed = ""
+    if rule.seed <> invalid and rule.seed <> ""
+        seed = rule.seed
+    else if rule.key <> invalid
+        seed = rule.key
+    end if
+    
+    ' Get hash version (default to 1)
+    hashVersion = 1
+    if rule.hashVersion <> invalid
+        hashVersion = rule.hashVersion
+    end if
+    
+    ' Calculate hash with seed (returns 0-1)
+    n = this._gbhash(seed, hashValue, hashVersion)
+    if n = invalid
+        return result
+    end if
     
     ' Get weights from rule level (not from individual variations)
     weights = rule.weights
@@ -336,14 +357,11 @@ function GrowthBook__evaluateExperiment(rule as object, result as object) as obj
         end for
     end if
     
-    ' Determine bucket position (0-1)
-    bucket = (hash mod 100) / 100.0
-    
-    ' Find variation
+    ' Find variation based on hash and weights
     cumulative = 0
     for i = 0 to rule.variations.Count() - 1
         cumulative = cumulative + weights[i]
-        if bucket <= cumulative
+        if n < cumulative
             result.value = rule.variations[i]
             result.on = CBool(rule.variations[i])
             result.off = not result.on
@@ -650,74 +668,54 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
 end function
 
 ' ===================================================================
-' Hash function with seed and version support (for experiments)
-' Returns value between 0 and 1
+' FNV-1a 32-bit hash algorithm
+' Returns integer hash value
 ' ===================================================================
-function GrowthBook__hash(value as string, version as integer) as float
-    ' Convert value to string if needed
-    if type(value) <> "roString"
-        value = Str(value)
-    end if
-    
-    ' FNV-1a 32-bit hash algorithm
-    prime = 16777619&
-    offsetBasis = 2166136261&
-    
-    ' Initialize hash
-    hash& = offsetBasis
+function GrowthBook__fnv1a32(str as string) as longinteger
+    ' FNV-1a constants
+    hval& = &h811C9DC5&  ' 2166136261 - offset basis
+    prime& = &h01000193&  ' 16777619 - FNV prime
     
     ' Process each character
-    for i = 0 to value.Len() - 1
-        charCode = Asc(Mid(value, i + 1, 1))
-        hash& = hash& xor charCode
-        hash& = (hash& * prime) and &hFFFFFFFF& ' 32-bit mask
+    for i = 0 to str.Len() - 1
+        charCode = Asc(Mid(str, i + 1, 1))
+        hval& = hval& xor charCode
+        hval& = (hval& * prime&) and &hFFFFFFFF&  ' Keep 32-bit
     end for
     
-    ' Convert to float between 0 and 1
-    ' Use modulo to get consistent distribution
-    if version = 2
-        ' Version 2: Different distribution
-        result = (hash& mod 10000) / 10000.0
-    else
-        ' Version 1: Original distribution
-        result = (hash& mod 1000) / 1000.0
-    end if
-    
-    return result
+    return hval&
 end function
 
 ' ===================================================================
-' Hash attribute for consistent variation assignment - FNV32a v2
+' GrowthBook hash function with seed and version support
+' Matches Python SDK gbhash(seed, value, version) implementation
+' Returns value between 0 and 1
 ' ===================================================================
-function GrowthBook__hashAttribute(value as string) as integer
-    ' FNV-1a 32-bit hash algorithm (v2)
-    ' Matches JS SDK implementation for consistent user bucketing
-    ' Used by: https://github.com/growthbook/growthbook/tree/main/packages/sdk-js
-    
+function GrowthBook__gbhash(seed as string, value as string, version as integer) as dynamic
     ' Convert to string if needed
     if type(value) <> "roString"
         value = Str(value)
     end if
+    if type(seed) <> "roString"
+        seed = ""
+    end if
     
-    ' FNV-1a constants
-    prime = 16777619&
-    offsetBasis = 2166136261&
+    if version = 2
+        ' Version 2: fnv1a32(str(fnv1a32(seed + value)))
+        combined = seed + value
+        hash1& = this._fnv1a32(combined)
+        hash2& = this._fnv1a32(Str(hash1&))
+        return (hash2& mod 10000) / 10000.0
+    else if version = 1
+        ' Version 1: fnv1a32(value + seed)
+        combined = value + seed
+        hash1& = this._fnv1a32(combined)
+        return (hash1& mod 1000) / 1000.0
+    end if
     
-    ' Initialize hash
-    hash& = offsetBasis
-    
-    ' Process each character
-    for i = 0 to value.Len() - 1
-        charCode = Asc(Mid(value, i + 1, 1))
-        hash& = hash& xor charCode
-        
-        ' Multiply by prime and ensure 32-bit overflow
-        hash& = (hash& * prime) and &hFFFFFFFF&
-    end for
-    
-    ' Return 0-99 range for bucket allocation
-    return (hash& mod 100)
+    return invalid
 end function
+
 
 ' ===================================================================
 ' Track experiment exposure

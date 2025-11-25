@@ -325,15 +325,16 @@ function GrowthBook__evaluateExperiment(rule as object, result as object) as obj
     
     hash = this._hashAttribute(bucketKey)
     
-    ' Allocate to variation based on hash
-    weights = []
-    for each variation in rule.variations
-        if type(variation) = "roAssociativeArray" and variation.weights <> invalid
-            weights.Push(variation.weights)
-        else
-            weights.Push(1.0 / rule.variations.Count())
-        end if
-    end for
+    ' Get weights from rule level (not from individual variations)
+    weights = rule.weights
+    if weights = invalid or weights.Count() = 0
+        ' Generate equal weights if not provided
+        equalWeight = 1.0 / rule.variations.Count()
+        weights = []
+        for i = 0 to rule.variations.Count() - 1
+            weights.Push(equalWeight)
+        end for
+    end if
     
     ' Determine bucket position (0-1)
     bucket = (hash mod 100) / 100.0

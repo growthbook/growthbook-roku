@@ -332,7 +332,7 @@ function GrowthBook__evaluateExperiment(rule as object, result as object) as obj
         seed = rule.seed
     else if rule.key <> invalid
         seed = rule.key
-    end if
+        end if
     
     ' Get hash version (default to 1)
     hashVersion = 1
@@ -527,6 +527,54 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
                     return false
                 end if
             end if
+            if condition_value.$veq <> invalid
+                ' Version equals
+                v1 = this._paddedVersionString(value)
+                v2 = this._paddedVersionString(condition_value.$veq)
+                if v1 <> v2
+                    return false
+                end if
+            end if
+            if condition_value.$vne <> invalid
+                ' Version not equals
+                v1 = this._paddedVersionString(value)
+                v2 = this._paddedVersionString(condition_value.$vne)
+                if v1 = v2
+                    return false
+                end if
+            end if
+            if condition_value.$vlt <> invalid
+                ' Version less than
+                v1 = this._paddedVersionString(value)
+                v2 = this._paddedVersionString(condition_value.$vlt)
+                if not (v1 < v2)
+                    return false
+                end if
+            end if
+            if condition_value.$vlte <> invalid
+                ' Version less than or equal
+                v1 = this._paddedVersionString(value)
+                v2 = this._paddedVersionString(condition_value.$vlte)
+                if not (v1 <= v2)
+                    return false
+                end if
+            end if
+            if condition_value.$vgt <> invalid
+                ' Version greater than
+                v1 = this._paddedVersionString(value)
+                v2 = this._paddedVersionString(condition_value.$vgt)
+                if not (v1 > v2)
+                    return false
+                end if
+            end if
+            if condition_value.$vgte <> invalid
+                ' Version greater than or equal
+                v1 = this._paddedVersionString(value)
+                v2 = this._paddedVersionString(condition_value.$vgte)
+                if not (v1 >= v2)
+                    return false
+                end if
+            end if
             if condition_value.$in <> invalid
                 found = false
                 for each v in condition_value.$in
@@ -688,7 +736,7 @@ end function
 
 ' ===================================================================
 ' GrowthBook hash function with seed and version support
-' Matches Python SDK gbhash(seed, value, version) implementation
+' Supports v1 and v2 hash algorithms for consistent bucketing
 ' Returns value between 0 and 1
 ' ===================================================================
 function GrowthBook__gbhash(seed as string, value as string, version as integer) as dynamic
@@ -714,6 +762,91 @@ function GrowthBook__gbhash(seed as string, value as string, version as integer)
     end if
     
     return invalid
+end function
+
+
+' ===================================================================
+' Version string padding for semantic version comparison
+' Enables comparisons like "2.0.0" > "1.9.9" and "1.0.0" > "1.0.0-beta"
+' ===================================================================
+function GrowthBook__paddedVersionString(input as dynamic) as string
+    ' Convert to string if number
+    if type(input) = "roInteger" or type(input) = "roFloat"
+        input = Str(input)
+    end if
+    
+    if type(input) <> "roString" or input = ""
+        return "0"
+    end if
+    
+    version = input
+    
+    ' Remove leading "v" if present
+    if Left(version, 1) = "v" or Left(version, 1) = "V"
+        version = Mid(version, 2)
+    end if
+    
+    ' Remove build info after "+" (e.g., "1.2.3+build123" -> "1.2.3")
+    plusPos = Instr(1, version, "+")
+    if plusPos > 0
+        version = Left(version, plusPos - 1)
+    end if
+    
+    ' Split on "." and "-"
+    parts = []
+    current = ""
+    
+    for i = 0 to version.Len() - 1
+        char = Mid(version, i + 1, 1)
+        if char = "." or char = "-"
+            if current <> ""
+                parts.Push(current)
+                current = ""
+            end if
+        else
+            current = current + char
+        end if
+    end for
+    
+    if current <> "" then parts.Push(current)
+    
+    ' If exactly 3 parts (SemVer without pre-release), add "~"
+    ' This makes "1.0.0" > "1.0.0-beta" since "~" is largest ASCII char
+    if parts.Count() = 3
+        parts.Push("~")
+    end if
+    
+    ' Pad numeric parts with spaces (right-justify to 5 chars)
+    result = ""
+    for i = 0 to parts.Count() - 1
+        part = parts[i]
+        
+        ' Check if part is numeric
+        isNumeric = true
+        if part.Len() = 0
+            isNumeric = false
+        else
+            for j = 0 to part.Len() - 1
+                charCode = Asc(Mid(part, j + 1, 1))
+                if charCode < 48 or charCode > 57  ' Not 0-9
+                    isNumeric = false
+                    exit for
+                end if
+            end for
+        end if
+        
+        ' Pad numeric parts with spaces
+        if isNumeric
+            while part.Len() < 5
+                part = " " + part
+            end while
+        end if
+        
+        if i > 0 then result = result + "-"
+        result = result + part
+    end for
+    
+    return result
 end function
 
 

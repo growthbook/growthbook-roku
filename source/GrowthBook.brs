@@ -39,6 +39,8 @@ function GrowthBook(config as object) as object
         _getAttributeValue: GrowthBook__getAttributeValue
         _fnv1a32: GrowthBook__fnv1a32
         _gbhash: GrowthBook__gbhash
+        _paddedVersionString: GrowthBook__paddedVersionString
+        _isIncludedInRollout: GrowthBook__isIncludedInRollout
         _trackExperiment: GrowthBook__trackExperiment
         _log: GrowthBook__log
     }
@@ -338,6 +340,20 @@ function GrowthBook__evaluateExperiment(rule as object, result as object) as obj
     hashVersion = 1
     if rule.hashVersion <> invalid
         hashVersion = rule.hashVersion
+    end if
+    
+    ' Check coverage (progressive rollout)
+    coverage = 1.0
+    if rule.coverage <> invalid
+        coverage = rule.coverage
+    end if
+    
+    if coverage < 1.0
+        ' Check if user is included in rollout
+        if not this._isIncludedInRollout(seed, hashValue, hashVersion, coverage)
+            ' User not in rollout - return default
+            return result
+        end if
     end if
     
     ' Calculate hash with seed (returns 0-1)
@@ -847,6 +863,24 @@ function GrowthBook__paddedVersionString(input as dynamic) as string
     end for
     
     return result
+end function
+
+' ===================================================================
+' Check if user is included in rollout based on coverage
+' ===================================================================
+function GrowthBook__isIncludedInRollout(seed as string, hashValue as string, hashVersion as integer, coverage as float) as boolean
+    ' Coverage of 1 or more includes everyone
+    if coverage >= 1.0 then return true
+    
+    ' Coverage of 0 or less excludes everyone
+    if coverage <= 0.0 then return false
+    
+    ' Calculate hash for this user
+    n = this._gbhash(seed, hashValue, hashVersion)
+    if n = invalid then return false
+    
+    ' User is included if their hash is less than coverage
+    return n <= coverage
 end function
 
 

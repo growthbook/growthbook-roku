@@ -77,7 +77,7 @@ function GrowthBook(config as object) as object
     ' Configure HTTP transfer
     instance.http.SetCertificatesFile("common:/certs/ca-bundle.crt")
     instance.http.AddHeader("Content-Type", "application/json")
-    instance.http.AddHeader("User-Agent", "GrowthBook-Roku/1.0.0")
+    instance.http.AddHeader("User-Agent", "GrowthBook-Roku/1.1.0")
     
     return instance
 end function
@@ -362,9 +362,11 @@ function GrowthBook__evaluateExperiment(rule as object, result as object) as obj
     
     ' Get bucket ranges using coverage and weights
     ranges = this._getBucketRanges(rule.variations.Count(), coverage, weights)
+    this._log("Bucket ranges calculated (coverage=" + Str(coverage) + ")")
     
     ' Choose variation based on hash and bucket ranges
     variationIndex = this._chooseVariation(n, ranges)
+    this._log("Variation selected: " + Str(variationIndex) + " (hash=" + Str(n) + ")")
     
     ' If no variation found (user outside buckets), return default
     if variationIndex < 0
@@ -910,11 +912,12 @@ end function
 ' Converts weights and coverage into [start, end) ranges
 ' ===================================================================
 function GrowthBook__getBucketRanges(numVariations as integer, coverage as float, weights as object) as object
-    ' Clamp coverage
+    ' Clamp coverage to valid range [0, 1]
     if coverage < 0 then coverage = 0
     if coverage > 1 then coverage = 1
     
     ' Generate equal weights if not provided or invalid
+    ' Equal weights = each variation gets 1/n of traffic
     if weights = invalid or weights.Count() = 0 or weights.Count() <> numVariations
         equalWeight = 1.0 / numVariations
         weights = []
@@ -942,7 +945,7 @@ function GrowthBook__getBucketRanges(numVariations as integer, coverage as float
     for each w in weights
         rangeStart = cumulative
         cumulative = cumulative + w
-        ' Apply coverage to each weight
+        ' Apply coverage: reduces each bucket by coverage percentage
         rangeEnd = rangeStart + coverage * w
         ranges.Push([rangeStart, rangeEnd])
     end for

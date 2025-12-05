@@ -323,7 +323,7 @@ function GrowthBook__evaluateExperiment(rule as object, result as object) as obj
     
     ' Convert to string if needed
     if type(hashValue) <> "roString"
-        hashValue = Str(hashValue)
+        hashValue = Str(hashValue).Trim()
     end if
     
     ' Get seed (defaults to experiment key or empty string)
@@ -742,7 +742,7 @@ end function
 function GrowthBook__gbhash(seed as string, value as string, version as integer) as dynamic
     ' Convert to string if needed
     if type(value) <> "roString"
-        value = Str(value)
+        value = Str(value).Trim()
     end if
     if type(seed) <> "roString"
         seed = ""
@@ -752,7 +752,7 @@ function GrowthBook__gbhash(seed as string, value as string, version as integer)
         ' Version 2: fnv1a32(str(fnv1a32(seed + value)))
         combined = seed + value
         hash1& = this._fnv1a32(combined)
-        hash2& = this._fnv1a32(Str(hash1&))
+        hash2& = this._fnv1a32(Str(hash1&).Trim())
         return (hash2& mod 10000) / 10000.0
     else if version = 1
         ' Version 1: fnv1a32(value + seed)
@@ -772,7 +772,7 @@ end function
 function GrowthBook__paddedVersionString(input as dynamic) as string
     ' Convert to string if number
     if type(input) = "roInteger" or type(input) = "roFloat"
-        input = Str(input)
+        input = Str(input).Trim()
     end if
     
     if type(input) <> "roString" or input = ""

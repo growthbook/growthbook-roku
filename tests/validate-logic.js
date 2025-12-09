@@ -29,6 +29,7 @@ class GrowthBook {
     constructor(config = {}) {
         this.attributes = config.attributes || {};
         this.features = config.features || {};
+        this.savedGroups = config.savedGroups || {};
     }
 
     // Evaluate conditions (mirrors your BrightScript implementation)
@@ -42,33 +43,45 @@ class GrowthBook {
             return true;
         }
 
-        // Logical operators
-        if (condition.$or) {
-            if (!Array.isArray(condition.$or) || condition.$or.length === 0) {
-                return true;
-            }
-            return condition.$or.some(c => this._evaluateConditions(c));
-        }
-
-        if (condition.$nor) {
-            if (!Array.isArray(condition.$nor)) return true;
-            return !condition.$nor.some(c => this._evaluateConditions(c));
-        }
-
-        if (condition.$and) {
-            if (!Array.isArray(condition.$and) || condition.$and.length === 0) {
-                return true;
-            }
-            return condition.$and.every(c => this._evaluateConditions(c));
-        }
-
-        if (condition.$not) {
-            return !this._evaluateConditions(condition.$not);
-        }
-
-        // Attribute conditions
+        // Process all conditions - ALL must pass (AND logic at top level)
         for (const [attr, conditionValue] of Object.entries(condition)) {
-            if (['$or', '$and', '$not', '$nor'].includes(attr)) continue;
+            // Handle top-level logical operators
+            if (attr === '$or') {
+                if (!Array.isArray(conditionValue) || conditionValue.length === 0) {
+                    continue;
+                }
+                if (!conditionValue.some(c => this._evaluateConditions(c))) {
+                    return false;
+                }
+                continue;
+            }
+
+            if (attr === '$nor') {
+                if (!Array.isArray(conditionValue)) continue;
+                if (conditionValue.some(c => this._evaluateConditions(c))) {
+                    return false;
+                }
+                continue;
+            }
+
+            if (attr === '$and') {
+                if (!Array.isArray(conditionValue) || conditionValue.length === 0) {
+                    continue;
+                }
+                if (!conditionValue.every(c => this._evaluateConditions(c))) {
+                    return false;
+                }
+                continue;
+            }
+
+            if (attr === '$not') {
+                if (this._evaluateConditions(conditionValue)) {
+                    return false;
+                }
+                continue;
+            }
+
+            // Handle attribute conditions
 
             const value = this._getAttributeValue(attr);
 
@@ -156,11 +169,20 @@ class GrowthBook {
                     if (!Array.isArray(value)) return false;
                     let found = false;
                     for (const item of value) {
-                        const tempGB = new GrowthBook({ attributes: { _item: item } });
-                        const tempCond = {};
-                        for (const [k, v] of Object.entries(conditionValue.$elemMatch)) {
-                            tempCond[`_item.${k}`] = v;
+                        let itemAttrs;
+                        let tempCond;
+                        
+                        if (typeof item === 'object' && item !== null && !Array.isArray(item)) {
+                            // For objects, evaluate condition directly against item
+                            itemAttrs = item;
+                            tempCond = conditionValue.$elemMatch;
+                        } else {
+                            // For primitives, wrap in special "_" attribute
+                            itemAttrs = { _: item };
+                            tempCond = { _: conditionValue.$elemMatch };
                         }
+                        
+                        const tempGB = new GrowthBook({ attributes: itemAttrs, savedGroups: this.savedGroups });
                         if (tempGB._evaluateConditions(tempCond)) {
                             found = true;
                             break;
@@ -174,7 +196,7 @@ class GrowthBook {
                     if (typeof conditionValue.$size === 'number') {
                         if (value.length !== conditionValue.$size) return false;
                     } else if (typeof conditionValue.$size === 'object') {
-                        const tempGB = new GrowthBook({ attributes: { _size: value.length } });
+                        const tempGB = new GrowthBook({ attributes: { _size: value.length }, savedGroups: this.savedGroups });
                         const tempCond = { _size: conditionValue.$size };
                         if (!tempGB._evaluateConditions(tempCond)) return false;
                     }
@@ -185,6 +207,51 @@ class GrowthBook {
                     for (const required of conditionValue.$all) {
                         if (!value.includes(required)) return false;
                     }
+                }
+
+                if ('$inGroup' in conditionValue) {
+                    const groupId = conditionValue.$inGroup;
+                    if (typeof groupId !== 'string') return false;
+                    const savedGroup = this.savedGroups[groupId];
+                    if (!savedGroup) return false;
+                    if (!Array.isArray(savedGroup)) return false;
+                    if (!savedGroup.includes(value)) return false;
+                }
+
+                if ('$notInGroup' in conditionValue) {
+                    const groupId = conditionValue.$notInGroup;
+                    if (typeof groupId !== 'string') return false;
+                    const savedGroup = this.savedGroups[groupId];
+                    if (!savedGroup) return true; // Group not found, so not in group
+                    if (!Array.isArray(savedGroup)) return false;
+                    if (savedGroup.includes(value)) return false;
+                }
+
+                if ('$not' in conditionValue) {
+                    // Negation operator on attribute value
+                    const tempGB = new GrowthBook({ attributes: this.attributes, savedGroups: this.savedGroups });
+                    const tempCond = { [attr]: conditionValue.$not };
+                    if (tempGB._evaluateConditions(tempCond)) {
+                        return false;
+                    }
+                }
+
+                // Check for unknown operators (operators starting with $)
+                const knownOps = ['$eq', '$ne', '$lt', '$lte', '$gt', '$gte', '$veq', '$vne', '$vlt', '$vlte', '$vgt', '$vgte', '$in', '$nin', '$exists', '$type', '$regex', '$elemMatch', '$size', '$all', '$inGroup', '$notInGroup', '$not'];
+                let hasOperator = false;
+                for (const key of Object.keys(conditionValue)) {
+                    if (key.startsWith('$')) {
+                        if (!knownOps.includes(key)) {
+                            // Unknown operator - fail the condition
+                            return false;
+                        }
+                        hasOperator = true;
+                    }
+                }
+                
+                // If no operators found, treat as direct equality
+                if (!hasOperator) {
+                    if (!this._deepEqual(value, conditionValue)) return false;
                 }
             } else {
                 // Direct equality
@@ -223,7 +290,9 @@ class GrowthBook {
 
     _deepEqual(a, b) {
         if (a === b) return true;
-        if (a === null || b === null || a === undefined || b === undefined) return a === b;
+        // Handle null/undefined - both null and undefined are considered equal
+        if ((a === null || a === undefined) && (b === null || b === undefined)) return true;
+        if (a === null || b === null || a === undefined || b === undefined) return false;
         if (typeof a !== typeof b) return false;
         if (Array.isArray(a) && Array.isArray(b)) {
             if (a.length !== b.length) return false;
@@ -385,8 +454,8 @@ function runTests(category, tests) {
             let result;
 
             if (category === 'evalCondition') {
-                const [condition, attributes, expected] = rest;
-                const gb = new GrowthBook({ attributes });
+                const [condition, attributes, expected, savedGroups] = rest;
+                const gb = new GrowthBook({ attributes, savedGroups });
                 result = gb._evaluateConditions(condition);
                 
                 if (result === expected) {

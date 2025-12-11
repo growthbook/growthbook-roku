@@ -21,6 +21,7 @@ function GrowthBook(config as object) as object
         features: {}
         experiments: {}
         cachedFeatures: {}
+        savedGroups: {}
         lastUpdate: 0
         isInitialized: false
         
@@ -39,6 +40,12 @@ function GrowthBook(config as object) as object
         _getAttributeValue: GrowthBook__getAttributeValue
         _fnv1a32: GrowthBook__fnv1a32
         _gbhash: GrowthBook__gbhash
+        _paddedVersionString: GrowthBook__paddedVersionString
+        _isIncludedInRollout: GrowthBook__isIncludedInRollout
+        _getBucketRanges: GrowthBook__getBucketRanges
+        _chooseVariation: GrowthBook__chooseVariation
+        _inRange: GrowthBook__inRange
+        _deepEqual: GrowthBook__deepEqual
         _trackExperiment: GrowthBook__trackExperiment
         _log: GrowthBook__log
     }
@@ -67,12 +74,15 @@ function GrowthBook(config as object) as object
             instance.cachedFeatures = config.features
             instance.isInitialized = true
         end if
+        if config.savedGroups <> invalid
+            instance.savedGroups = config.savedGroups
+        end if
     end if
     
     ' Configure HTTP transfer
     instance.http.SetCertificatesFile("common:/certs/ca-bundle.crt")
     instance.http.AddHeader("Content-Type", "application/json")
-    instance.http.AddHeader("User-Agent", "GrowthBook-Roku/1.0.0")
+    instance.http.AddHeader("User-Agent", "GrowthBook-Roku/1.1.0")
     
     return instance
 end function
@@ -129,7 +139,7 @@ function GrowthBook__loadFeaturesFromAPI() as boolean
         this.cachedFeatures = features
         this.lastUpdate = GetTickCount()
         this.isInitialized = true
-        this._log("Features loaded successfully: " + Str(features.Count()) + " features")
+        this._log("Features loaded successfully: " + Str(features.Count()).Trim() + " features")
         return true
     end if
     
@@ -340,44 +350,47 @@ function GrowthBook__evaluateExperiment(rule as object, result as object) as obj
         hashVersion = rule.hashVersion
     end if
     
+    ' Get coverage (defaults to 1.0 = 100%)
+    coverage = 1.0
+    if rule.coverage <> invalid
+        coverage = rule.coverage
+    end if
+    
     ' Calculate hash with seed (returns 0-1)
     n = this._gbhash(seed, hashValue, hashVersion)
     if n = invalid
         return result
     end if
     
-    ' Get weights from rule level (not from individual variations)
+    ' Get weights from rule level
     weights = rule.weights
-    if weights = invalid or weights.Count() = 0
-        ' Generate equal weights if not provided
-        equalWeight = 1.0 / rule.variations.Count()
-        weights = []
-        for i = 0 to rule.variations.Count() - 1
-            weights.Push(equalWeight)
-        end for
+    
+    ' Get bucket ranges using coverage and weights
+    ranges = this._getBucketRanges(rule.variations.Count(), coverage, weights)
+    this._log("Bucket ranges calculated (coverage=" + Str(coverage).Trim() + ")")
+    
+    ' Choose variation based on hash and bucket ranges
+    variationIndex = this._chooseVariation(n, ranges)
+    this._log("Variation selected: " + Str(variationIndex).Trim() + " (hash=" + Str(n).Trim() + ")")
+    
+    ' If no variation found (user outside buckets), return default
+    if variationIndex < 0
+        return result
     end if
     
-    ' Find variation based on hash and weights
-    cumulative = 0
-    for i = 0 to rule.variations.Count() - 1
-        cumulative = cumulative + weights[i]
-        if n < cumulative
-            result.value = rule.variations[i]
-            result.on = CBool(rule.variations[i])
-            result.off = not result.on
-            result.variationId = i
-            result.source = "experiment"
-            
-            if rule.key <> invalid
-                result.experimentId = rule.key
-            end if
-            
-            ' Track the experiment if callback is set
-            this._trackExperiment(rule, result)
-            
-            return result
-        end if
-    end for
+    ' User is assigned to a variation
+    result.value = rule.variations[variationIndex]
+    result.on = CBool(rule.variations[variationIndex])
+    result.off = not result.on
+    result.variationId = variationIndex
+    result.source = "experiment"
+    
+    if rule.key <> invalid
+        result.experimentId = rule.key
+    end if
+    
+    ' Track the experiment if callback is set
+    this._trackExperiment(rule, result)
     
     return result
 end function
@@ -437,59 +450,64 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
         return true
     end if
     
-    ' Logical operators
-    if condition.DoesExist("$or")
-        if type(condition.$or) <> "roArray"
-            return true
-        end if
-        if condition.$or.Count() = 0
-            return true
-        end if
-        for each subcond in condition.$or
-            if this._evaluateConditions(subcond)
-                return true
-            end if
-        end for
-        return false
-    end if
-    
-    if condition.DoesExist("$nor")
-        if type(condition.$nor) <> "roArray"
-            return true
-        end if
-        for each subcond in condition.$nor
-            if this._evaluateConditions(subcond)
-                return false
-            end if
-        end for
-        return true
-    end if
-    
-    if condition.DoesExist("$and")
-        if type(condition.$and) <> "roArray"
-            return true
-        end if
-        if condition.$and.Count() = 0
-            return true
-        end if
-        for each subcond in condition.$and
-            if not this._evaluateConditions(subcond)
-                return false
-            end if
-        end for
-        return true
-    end if
-    
-    if condition.DoesExist("$not")
-        return not this._evaluateConditions(condition.$not)
-    end if
-    
-    ' Attribute conditions
+    ' Process all conditions - ALL must pass (AND logic at top level)
     for each attr in condition
-        ' Skip logical operators at this level
-        if attr = "$or" or attr = "$and" or attr = "$not" or attr = "$nor"
+        ' Handle logical operators
+        if attr = "$or"
+            if type(condition.$or) <> "roArray"
+                continue for
+            end if
+            if condition.$or.Count() = 0
+                continue for
+            end if
+            orPassed = false
+            for each subcond in condition.$or
+                if this._evaluateConditions(subcond)
+                    orPassed = true
+                    exit for
+                end if
+            end for
+            if not orPassed
+                return false
+            end if
             continue for
         end if
+        
+        if attr = "$nor"
+            if type(condition.$nor) <> "roArray"
+                continue for
+            end if
+            for each subcond in condition.$nor
+                if this._evaluateConditions(subcond)
+                    return false
+                end if
+            end for
+            continue for
+        end if
+        
+        if attr = "$and"
+            if type(condition.$and) <> "roArray"
+                continue for
+            end if
+            if condition.$and.Count() = 0
+                continue for
+            end if
+            for each subcond in condition.$and
+                if not this._evaluateConditions(subcond)
+                    return false
+                end if
+            end for
+            continue for
+        end if
+        
+        if attr = "$not"
+            if this._evaluateConditions(condition.$not)
+                return false
+            end if
+            continue for
+        end if
+        
+        ' Handle attribute conditions
         
         value = this._getAttributeValue(attr)
         condition_value = condition[attr]
@@ -577,24 +595,54 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
             end if
             if condition_value.$in <> invalid
                 found = false
-                for each v in condition_value.$in
-                    if value = v
-                        found = true
-                        exit for
-                    end if
-                end for
+                ' Check if value is an array (array intersection)
+                if type(value) = "roArray"
+                    ' Array intersection: check if any element in value matches any in $in
+                    for each userVal in value
+                        for each condVal in condition_value.$in
+                            if userVal = condVal
+                                found = true
+                                exit for
+                            end if
+                        end for
+                        if found then exit for
+                    end for
+                else
+                    ' Single value: check if it exists in $in array
+                    for each v in condition_value.$in
+                        if value = v
+                            found = true
+                            exit for
+                        end if
+                    end for
+                end if
                 if not found
                     return false
                 end if
             end if
             if condition_value.$nin <> invalid
                 found = false
-                for each v in condition_value.$nin
-                    if value = v
-                        found = true
-                        exit for
-                    end if
-                end for
+                ' Check if value is an array (array intersection)
+                if type(value) = "roArray"
+                    ' Array intersection: check if any element in value matches any in $nin
+                    for each userVal in value
+                        for each condVal in condition_value.$nin
+                            if userVal = condVal
+                                found = true
+                                exit for
+                            end if
+                        end for
+                        if found then exit for
+                    end for
+                else
+                    ' Single value: check if it exists in $nin array
+                    for each v in condition_value.$nin
+                        if value = v
+                            found = true
+                            exit for
+                        end if
+                    end for
+                end if
                 if found
                     return false
                 end if
@@ -643,17 +691,20 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
                 end if
                 found = false
                 for each item in value
-                    ' Check if this item matches the condition
                     if type(condition_value.$elemMatch) = "roAssociativeArray"
-                        ' Create temporary GB instance to evaluate nested condition
-                        tempAttrs = { "_item": item }
-                        tempCondition = {}
-                        for each key in condition_value.$elemMatch
-                            tempCondition["_item"] = {}
-                            tempCondition["_item"][key] = condition_value.$elemMatch[key]
-                        end for
-                        ' Simplified check for single value
-                        if this._evaluateConditions(tempCondition)
+                        ' Prepare attributes and condition based on item type
+                        if type(item) = "roAssociativeArray"
+                            ' For objects: evaluate condition directly against item
+                            itemAttrs = item
+                            tempCond = condition_value.$elemMatch
+                        else
+                            ' For primitives: wrap in "_" attribute
+                            itemAttrs = { "_": item }
+                            tempCond = { "_": condition_value.$elemMatch }
+                        end if
+                        ' Evaluate the condition
+                        tempGB = GrowthBook({ attributes: itemAttrs, savedGroups: this.savedGroups })
+                        if tempGB._evaluateConditions(tempCond)
                             found = true
                             exit for
                         end if
@@ -704,9 +755,104 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
                     end if
                 end for
             end if
+            if condition_value.$inGroup <> invalid
+                ' Check if value is in a saved group
+                groupId = condition_value.$inGroup
+                if type(groupId) <> "roString"
+                    return false
+                end if
+                ' Get the saved group
+                if this.savedGroups.DoesExist(groupId)
+                    savedGroup = this.savedGroups[groupId]
+                    if type(savedGroup) = "roArray"
+                        ' Check if value is in the group
+                        found = false
+                        for each groupMember in savedGroup
+                            if value = groupMember
+                                found = true
+                                exit for
+                            end if
+                        end for
+                        if not found
+                            return false
+                        end if
+                    else
+                        return false
+                    end if
+                else
+                    ' Group not found
+                    return false
+                end if
+            end if
+            if condition_value.$notInGroup <> invalid
+                ' Check if value is NOT in a saved group
+                groupId = condition_value.$notInGroup
+                if type(groupId) <> "roString"
+                    return false
+                end if
+                ' Get the saved group
+                if this.savedGroups.DoesExist(groupId)
+                    savedGroup = this.savedGroups[groupId]
+                    if type(savedGroup) = "roArray"
+                        ' Check if value is in the group
+                        found = false
+                        for each groupMember in savedGroup
+                            if value = groupMember
+                                found = true
+                                exit for
+                            end if
+                        end for
+                        if found
+                            return false
+                        end if
+                    else
+                        return false
+                    end if
+                else
+                    ' Group not found - value is not in group, so passes $notInGroup
+                    return true
+                end if
+            end if
+            if condition_value.$not <> invalid
+                ' Negation operator on attribute value
+                tempGB = GrowthBook({ attributes: this.attributes, savedGroups: this.savedGroups })
+                tempCondition = {}
+                tempCondition[attr] = condition_value.$not
+                if tempGB._evaluateConditions(tempCondition)
+                    return false
+                end if
+            end if
+            
+            ' Check for unknown operators (operators starting with $)
+            hasOperator = false
+            for each key in condition_value
+                if Left(key, 1) = "$"
+                    ' Check if it's a known operator
+                    knownOps = ["$eq", "$ne", "$lt", "$lte", "$gt", "$gte", "$veq", "$vne", "$vlt", "$vlte", "$vgt", "$vgte", "$in", "$nin", "$exists", "$type", "$regex", "$elemMatch", "$size", "$all", "$inGroup", "$notInGroup", "$not"]
+                    isKnown = false
+                    for each op in knownOps
+                        if key = op
+                            isKnown = true
+                            exit for
+                        end if
+                    end for
+                    if not isKnown
+                        ' Unknown operator - fail the condition
+                        return false
+                    end if
+                    hasOperator = true
+                end if
+            end for
+            
+            ' If no operators found, treat as direct equality
+            if not hasOperator
+                if not this._deepEqual(value, condition_value)
+                    return false
+                end if
+            end if
         else
             ' Direct equality
-            if value <> condition_value
+            if not this._deepEqual(value, condition_value)
                 return false
             end if
         end if
@@ -849,6 +995,157 @@ function GrowthBook__paddedVersionString(input as dynamic) as string
     return result
 end function
 
+' ===================================================================
+' Check if user is included in rollout based on coverage
+' Used for feature percentage rollouts (force rules with coverage)
+' Note: Experiments use _getBucketRanges instead
+' ===================================================================
+function GrowthBook__isIncludedInRollout(seed as string, hashValue as string, hashVersion as integer, coverage as float) as boolean
+    ' Coverage of 1 or more includes everyone
+    if coverage >= 1.0 then return true
+    
+    ' Coverage of 0 or less excludes everyone
+    if coverage <= 0.0 then return false
+    
+    ' Calculate hash for this user
+    n = this._gbhash(seed, hashValue, hashVersion)
+    if n = invalid then return false
+    
+    ' User is included if their hash is less than coverage
+    return n <= coverage
+end function
+
+' ===================================================================
+' Get bucket ranges for variation assignment
+' Converts weights and coverage into [start, end) ranges
+' ===================================================================
+function GrowthBook__getBucketRanges(numVariations as integer, coverage as float, weights as object) as object
+    ' Return empty ranges if no variations
+    if numVariations < 1 then return []
+    
+    ' Clamp coverage to valid range [0, 1]
+    if coverage < 0 then coverage = 0
+    if coverage > 1 then coverage = 1
+    
+    ' Generate equal weights if not provided or invalid
+    ' Equal weights = each variation gets 1/n of traffic
+    if weights = invalid or weights.Count() = 0 or weights.Count() <> numVariations
+        equalWeight = 1.0 / numVariations
+        weights = []
+        for i = 0 to numVariations - 1
+            weights.Push(equalWeight)
+        end for
+    end if
+    
+    ' Validate weights sum (should be ~1.0)
+    weightSum = 0
+    for each w in weights
+        weightSum = weightSum + w
+    end for
+    if weightSum < 0.99 or weightSum > 1.01
+        equalWeight = 1.0 / numVariations
+        weights = []
+        for i = 0 to numVariations - 1
+            weights.Push(equalWeight)
+        end for
+    end if
+    
+    ' Build bucket ranges as [start, end] arrays
+    ranges = []
+    cumulative = 0.0
+    for each w in weights
+        rangeStart = cumulative
+        cumulative = cumulative + w
+        ' Apply coverage: reduces each bucket by coverage percentage
+        rangeEnd = rangeStart + coverage * w
+        ranges.Push([rangeStart, rangeEnd])
+    end for
+    
+    return ranges
+end function
+
+' ===================================================================
+' Choose variation based on hash value and bucket ranges
+' Returns variation index, or -1 if not in any bucket
+' ===================================================================
+function GrowthBook__chooseVariation(n as float, ranges as object) as integer
+    for i = 0 to ranges.Count() - 1
+        if this._inRange(n, ranges[i])
+            return i
+        end if
+    end for
+    return -1
+end function
+
+' ===================================================================
+' Check if value is within a bucket range [start, end)
+' Range is array: [0] = start, [1] = end
+' ===================================================================
+function GrowthBook__inRange(n as float, range as object) as boolean
+    return n >= range[0] and n < range[1]
+end function
+
+' ===================================================================
+' Deep equality check for values
+' Handles null, primitives, arrays, and objects
+' ===================================================================
+function GrowthBook__deepEqual(val1 as dynamic, val2 as dynamic) as boolean
+    ' Handle null/invalid
+    if val1 = invalid and val2 = invalid
+        return true
+    end if
+    if val1 = invalid or val2 = invalid
+        return false
+    end if
+    
+    ' Type must match
+    type1 = type(val1)
+    type2 = type(val2)
+    if type1 <> type2
+        return false
+    end if
+    
+    ' Primitives
+    if type1 = "roString" or type1 = "roInteger" or type1 = "roFloat" or type1 = "roBoolean" or type1 = "String" or type1 = "Integer" or type1 = "Boolean"
+        return val1 = val2
+    end if
+    
+    ' Arrays
+    if type1 = "roArray"
+        if val1.Count() <> val2.Count()
+            return false
+        end if
+        for i = 0 to val1.Count() - 1
+            if not this._deepEqual(val1[i], val2[i])
+                return false
+            end if
+        end for
+        return true
+    end if
+    
+    ' Objects
+    if type1 = "roAssociativeArray"
+        ' Check if all keys in val1 exist in val2 with same values
+        for each key in val1
+            if not val2.DoesExist(key)
+                return false
+            end if
+            if not this._deepEqual(val1[key], val2[key])
+                return false
+            end if
+        end for
+        ' Check if val2 has any extra keys
+        for each key in val2
+            if not val1.DoesExist(key)
+                return false
+            end if
+        end for
+        return true
+    end if
+    
+    ' Default: use equality
+    return val1 = val2
+end function
 
 ' ===================================================================
 ' Track experiment exposure

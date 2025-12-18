@@ -82,7 +82,7 @@ function GrowthBook(config as object) as object
     ' Configure HTTP transfer
     instance.http.SetCertificatesFile("common:/certs/ca-bundle.crt")
     instance.http.AddHeader("Content-Type", "application/json")
-    instance.http.AddHeader("User-Agent", "GrowthBook-Roku/1.1.0")
+    instance.http.AddHeader("User-Agent", "GrowthBook-Roku/1.2.0")
     
     return instance
 end function

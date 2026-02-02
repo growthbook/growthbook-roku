@@ -231,7 +231,7 @@ function GrowthBookTestRunner_runEvalConditionTest(test as object) as object
     if test.Count() > 4 then savedGroups = test[4]
     
     ' Create GrowthBook instance
-    config = { attributes: attributes }
+    config = { attributes: attributes, http: {} }
     if savedGroups <> invalid then config.savedGroups = savedGroups
     gb = GrowthBook(config)
     
@@ -262,7 +262,7 @@ function GrowthBookTestRunner_runHashTest(test as object) as object
     testName = "hash(" + seed + ", " + valueStr + ", v" + Str(version).Trim() + ")"
     
     ' Create GrowthBook instance
-    gb = GrowthBook({})
+    gb = GrowthBook({ http: {} })
     
     ' Run test
     actual = gb._gbhash(seed, value, version)
@@ -297,7 +297,7 @@ function GrowthBookTestRunner_runGetBucketRangeTest(test as object) as object
     if params.Count() > 2 then weights = params[2]
     
     ' Create GrowthBook instance
-    gb = GrowthBook({})
+    gb = GrowthBook({ http: {} })
     
     ' Run test
     actual = gb._getBucketRanges(numVariations, coverage, weights)
@@ -329,7 +329,7 @@ function GrowthBookTestRunner_runChooseVariationTest(test as object) as object
     expected = test[3]
     
     ' Create GrowthBook instance
-    gb = GrowthBook({})
+    gb = GrowthBook({ http: {} })
     
     ' Run test
     actual = gb._chooseVariation(n, ranges)
@@ -349,7 +349,7 @@ function GrowthBookTestRunner_runFeatureTest(test as object) as object
     expected = test[3]
     
     ' Build config from context
-    config = {}
+    config = {http: {}}
     if context.attributes <> invalid then config.attributes = context.attributes
     if context.features <> invalid then config.features = context.features
     if context.savedGroups <> invalid then config.savedGroups = context.savedGroups

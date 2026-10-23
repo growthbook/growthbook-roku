@@ -541,6 +541,8 @@ GrowthBook supports powerful targeting rules to show features to specific user s
 | `$lt` | Less than | `{ "age": { "$lt": 65 } }` |
 | `$lte` | Less than or equal | `{ "age": { "$lte": 64 } }` |
 
+**Types must match.** An attribute whose type differs from the condition value fails the operator (and matches its negation). Values are never coerced: `"10"` does not equal `10`, and a missing attribute fails `$gt`/`$gte`/`$lt`/`$lte`. Two strings compare as text (`"10" < "9"`), and booleans are not ordered. Version operators need both sides to be strings, or both numbers.
+
 #### Version Comparisons
 
 **New in v1.0.0** - Semantic version comparison operators.

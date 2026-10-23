@@ -2,6 +2,23 @@
 
 All notable changes to the GrowthBook Roku SDK.
 
+## [Unreleased]
+
+### Breaking
+- **Strict types in condition evaluation** (spec 0.10.0, growthbook/growthbook#7379) - an attribute whose type differs from the condition value now fails the operator and matches its negation. No coercion: `"10"` no longer equals `10`, a string number no longer satisfies `$gt`/`$lt` against a number (or vice versa), a missing attribute fails comparison operators, booleans are not ordered, and version operators (`$veq`, `$vgt`, ...) need both sides to be strings or both numbers. `$exists` and `$type` are unchanged.
+
+### Added
+- **Case-insensitive operators** - `$ini`, `$nini`, `$alli` and `$regexi`
+
+### Fixed
+- **Non-blocking prerequisites** - a failing prerequisite that is not a gate now skips the rule instead of blocking the feature, so a malformed prerequisite condition falls through to the next rule
+- **Version strings** - an empty version is treated as `0`, and empty segments (`"1..2"`) are kept, matching the JS SDK
+- **Sticky bucketing** - assignments stored under the fallback attribute are merged even when they lack the current bucket version, so `minBucketVersion` blocks old fallback assignments
+- **Native test runner** - `run-native.js` now fails when the interpreter stops before printing a result, instead of reporting a pass
+
+### Changed
+- **Spec tests** - `tests/cases.json` updated from spec 0.7.1 to 0.10.1; contextual bandit feature cases are skipped (not implemented)
+
 ## [1.4.1] - 2026-02-18
 
 ### Fixed

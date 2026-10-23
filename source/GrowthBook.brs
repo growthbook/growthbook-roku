@@ -57,6 +57,10 @@ function GrowthBook(config as object) as object
         _inRange: GrowthBook__inRange,
         _deepEqual: GrowthBook__deepEqual,
         _compare: GrowthBook__compare,
+        _jsonType: GrowthBook__jsonType,
+        _isOrderable: GrowthBook__isOrderable,
+        _valuesEqual: GrowthBook__valuesEqual,
+        _isIn: GrowthBook__isIn,
         _trackExperiment: GrowthBook__trackExperiment,
         _trackFeatureUsage: GrowthBook__trackFeatureUsage,
         _evaluateExperiment: GrowthBook__evaluateExperiment,
@@ -446,6 +450,7 @@ function GrowthBook_evalFeature(key as string) as object
                 if type(rule) = "roAssociativeArray"
                     while true
                         ' 1. Prerequisites
+                        skipRule = false
                         if rule.parentConditions <> invalid
                             for each parent in rule.parentConditions
                                 parentResult = m.evalFeature(parent.id)
@@ -464,6 +469,11 @@ function GrowthBook_evalFeature(key as string) as object
                                 end if
                                 
                                 if gateFailed or conditionFailed
+                                    ' Only a gate blocks the feature; any other failing prerequisite skips this rule
+                                    if not GrowthBook_toBoolean(parent.gate)
+                                        skipRule = true
+                                        exit for
+                                    end if
                                     result.source = "prerequisite"
                                     m._evaluationStack.Pop()
                                     m._trackFeatureUsage(key, result)
@@ -471,6 +481,7 @@ function GrowthBook_evalFeature(key as string) as object
                                 end if
                             end for
                         end if
+                        if skipRule then exit while
                         
                         ' 2. Rule Condition
                         if not m._evaluateConditions(rule.condition) then exit while
@@ -903,12 +914,12 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
         if type(condition_value) = "roAssociativeArray"
             ' Operator conditions
             if condition_value["$eq"] <> invalid
-                if value <> condition_value["$eq"]
+                if not m._valuesEqual(value, condition_value["$eq"])
                     return false
                 end if
             end if
             if condition_value["$ne"] <> invalid
-                if value = condition_value["$ne"]
+                if m._valuesEqual(value, condition_value["$ne"])
                     return false
                 end if
             end if
@@ -926,6 +937,7 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
             end if
             if condition_value["$veq"] <> invalid
                 ' Version equals
+                if not m._isOrderable(value, condition_value["$veq"]) then return false
                 v1 = m._paddedVersionString(value)
                 v2 = m._paddedVersionString(condition_value["$veq"])
                 if v1 <> v2
@@ -934,14 +946,18 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
             end if
             if condition_value["$vne"] <> invalid
                 ' Version not equals
-                v1 = m._paddedVersionString(value)
-                v2 = m._paddedVersionString(condition_value["$vne"])
-                if v1 = v2
-                    return false
+                ' A type mismatch is "not equal", so $vne passes
+                if m._isOrderable(value, condition_value["$vne"])
+                    v1 = m._paddedVersionString(value)
+                    v2 = m._paddedVersionString(condition_value["$vne"])
+                    if v1 = v2
+                        return false
+                    end if
                 end if
             end if
             if condition_value["$vlt"] <> invalid
                 ' Version less than
+                if not m._isOrderable(value, condition_value["$vlt"]) then return false
                 v1 = m._paddedVersionString(value)
                 v2 = m._paddedVersionString(condition_value["$vlt"])
                 if not (v1 < v2)
@@ -950,6 +966,7 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
             end if
             if condition_value["$vlte"] <> invalid
                 ' Version less than or equal
+                if not m._isOrderable(value, condition_value["$vlte"]) then return false
                 v1 = m._paddedVersionString(value)
                 v2 = m._paddedVersionString(condition_value["$vlte"])
                 if not (v1 <= v2)
@@ -958,6 +975,7 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
             end if
             if condition_value["$vgt"] <> invalid
                 ' Version greater than
+                if not m._isOrderable(value, condition_value["$vgt"]) then return false
                 v1 = m._paddedVersionString(value)
                 v2 = m._paddedVersionString(condition_value["$vgt"])
                 if not (v1 > v2)
@@ -966,6 +984,7 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
             end if
             if condition_value["$vgte"] <> invalid
                 ' Version greater than or equal
+                if not m._isOrderable(value, condition_value["$vgte"]) then return false
                 v1 = m._paddedVersionString(value)
                 v2 = m._paddedVersionString(condition_value["$vgte"])
                 if not (v1 >= v2)
@@ -974,59 +993,19 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
             end if
             if condition_value["$in"] <> invalid
                 if type(condition_value["$in"]) <> "roArray" then return false
-                found = false
-                ' Check if value is an array (array intersection)
-                if type(value) = "roArray"
-                    ' Array intersection: check if any element in value matches any in _in
-                    for each userVal in value
-                        for each condVal in condition_value["$in"]
-                            if userVal = condVal
-                                found = true
-                                exit for
-                            end if
-                        end for
-                        if found then exit for
-                    end for
-                else
-                    ' Single value: check if it exists in _in array
-                    for each v in condition_value["$in"]
-                        if value = v
-                            found = true
-                            exit for
-                        end if
-                    end for
-                end if
-                if not found
-                    return false
-                end if
+                if not m._isIn(value, condition_value["$in"], false) then return false
+            end if
+            if condition_value["$ini"] <> invalid
+                if type(condition_value["$ini"]) <> "roArray" then return false
+                if not m._isIn(value, condition_value["$ini"], true) then return false
             end if
             if condition_value["$nin"] <> invalid
                 if type(condition_value["$nin"]) <> "roArray" then return false
-                found = false
-                ' Check if value is an array (array intersection)
-                if type(value) = "roArray"
-                    ' Array intersection: check if any element in value matches any in _nin
-                    for each userVal in value
-                        for each condVal in condition_value["$nin"]
-                            if userVal = condVal
-                                found = true
-                                exit for
-                            end if
-                        end for
-                        if found then exit for
-                    end for
-                else
-                    ' Single value: check if it exists in _nin array
-                    for each v in condition_value["$nin"]
-                        if value = v
-                            found = true
-                            exit for
-                        end if
-                    end for
-                end if
-                if found
-                    return false
-                end if
+                if m._isIn(value, condition_value["$nin"], false) then return false
+            end if
+            if condition_value["$nini"] <> invalid
+                if type(condition_value["$nini"]) <> "roArray" then return false
+                if m._isIn(value, condition_value["$nini"], true) then return false
             end if
             if condition_value["$type"] <> invalid
                 ' Check if actual type matches expected type
@@ -1054,34 +1033,39 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
                     return false
                 end if
             end if
-            if condition_value["$regex"] <> invalid
-                ' Regex matching
-                if value = invalid or (type(value) <> "roString" and type(value) <> "String")
-                    return false
-                end if
-                pattern = condition_value["$regex"]
-                if type(pattern) <> "roString" and type(pattern) <> "String"
-                    return false
-                end if
-                ' Reject patterns with invalid quantifier sequences (crashes roRegex)
-                firstChar = Left(pattern, 1)
-                if firstChar = "?" or firstChar = "*" or firstChar = "+"
-                    return false
-                end if
-                if Instr(1, pattern, "**") > 0 or Instr(1, pattern, "++") > 0 or Instr(1, pattern, "???") > 0
-                    return false
-                end if
-                ' Use CreateObject("roRegex") for pattern matching
-                try
-                    regex = CreateObject("roRegex", pattern, "")
-                    if regex = invalid or not regex.IsMatch(value)
+            for each regexOp in ["$regex", "$regexi"]
+                if condition_value[regexOp] <> invalid
+                    ' Regex matching
+                    if value = invalid or (type(value) <> "roString" and type(value) <> "String")
                         return false
                     end if
-                catch e
-                    ' Invalid regex pattern - fail the condition
-                    return false
-                end try
-            end if
+                    pattern = condition_value[regexOp]
+                    if type(pattern) <> "roString" and type(pattern) <> "String"
+                        return false
+                    end if
+                    ' Reject patterns with invalid quantifier sequences (crashes roRegex)
+                    firstChar = Left(pattern, 1)
+                    if firstChar = "?" or firstChar = "*" or firstChar = "+"
+                        return false
+                    end if
+                    if Instr(1, pattern, "**") > 0 or Instr(1, pattern, "++") > 0 or Instr(1, pattern, "???") > 0
+                        return false
+                    end if
+                    ' $regexi matches case-insensitively
+                    regexFlags = ""
+                    if regexOp = "$regexi" then regexFlags = "i"
+                    ' Use CreateObject("roRegex") for pattern matching
+                    try
+                        regex = CreateObject("roRegex", pattern, regexFlags)
+                        if regex = invalid or not regex.IsMatch(value)
+                            return false
+                        end if
+                    catch e
+                        ' Invalid regex pattern - fail the condition
+                        return false
+                    end try
+                end if
+            end for
             if condition_value["$elemMatch"] <> invalid
                 ' Array element matching
                 if value = invalid or type(value) <> "roArray"
@@ -1124,32 +1108,24 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
                     end if
                 else
                     ' Direct size comparison
-                    if actualSize <> expectedSize
+                    if not m._valuesEqual(actualSize, expectedSize)
                         return false
                     end if
                 end if
             end if
-            if condition_value["$all"] <> invalid
-                ' All elements must be present
-                if value = invalid or type(value) <> "roArray"
-                    return false
-                end if
-                if type(condition_value["$all"]) <> "roArray"
-                    return false
-                end if
-                for each required in condition_value["$all"]
-                    found = false
-                    for each item in value
-                        if item = required
-                            found = true
-                            exit for
+            for each allOp in ["$all", "$alli"]
+                if condition_value[allOp] <> invalid
+                    ' All elements must be present ($alli ignores case)
+                    if type(value) <> "roArray" or type(condition_value[allOp]) <> "roArray"
+                        return false
+                    end if
+                    for each required in condition_value[allOp]
+                        if not m._isIn(required, value, allOp = "$alli")
+                            return false
                         end if
                     end for
-                    if not found
-                        return false
-                    end if
-                end for
-            end if
+                end if
+            end for
             if condition_value["$inGroup"] <> invalid
                 ' Check if value is in a saved group
                 groupId = condition_value["$inGroup"]
@@ -1163,7 +1139,7 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
                         ' Check if value is in the group
                         found = false
                         for each groupMember in savedGroup
-                            if value = groupMember
+                            if m._valuesEqual(value, groupMember)
                                 found = true
                                 exit for
                             end if
@@ -1192,7 +1168,7 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
                         ' Check if value is in the group
                         found = false
                         for each groupMember in savedGroup
-                            if value = groupMember
+                            if m._valuesEqual(value, groupMember)
                                 found = true
                                 exit for
                             end if
@@ -1223,7 +1199,7 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
             for each key in condition_value
                 if Left(key, 1) = "$"
                     ' Check if it's a known operator
-                    knownOps = ["$eq", "$ne", "$lt", "$lte", "$gt", "$gte", "$veq", "$vne", "$vlt", "$vlte", "$vgt", "$vgte", "$in", "$nin", "$exists", "$type", "$regex", "$elemMatch", "$size", "$all", "$inGroup", "$notInGroup", "$not"]
+                    knownOps = ["$eq", "$ne", "$lt", "$lte", "$gt", "$gte", "$veq", "$vne", "$vlt", "$vlte", "$vgt", "$vgte", "$in", "$ini", "$nin", "$nini", "$exists", "$type", "$regex", "$regexi", "$elemMatch", "$size", "$all", "$alli", "$inGroup", "$notInGroup", "$not"]
                     isKnown = false
                     for each op in knownOps
                         if key = op
@@ -1329,12 +1305,12 @@ end function
 ' ===================================================================
 function GrowthBook__paddedVersionString(input as dynamic) as string
     ' Convert to string if number
-    if type(input) = "roInteger" or type(input) = "roFloat"
+    if m._jsonType(input) = "number"
         input = Str(input).Trim()
     end if
     
-    if (type(input) <> "roString" and type(input) <> "String") or input = ""
-        return "0"
+    if m._jsonType(input) <> "string" or input = ""
+        input = "0"
     end if
     
     version = input
@@ -1357,16 +1333,15 @@ function GrowthBook__paddedVersionString(input as dynamic) as string
     for i = 0 to version.Len() - 1
         char = Mid(version, i + 1, 1)
         if char = "." or char = "-"
-            if current <> ""
-                parts.Push(current)
-                current = ""
-            end if
+            ' Keep empty segments, like the JS SDK ("1..2" has 3 parts)
+            parts.Push(current)
+            current = ""
         else
             current = current + char
         end if
     end for
     
-    if current <> "" then parts.Push(current)
+    parts.Push(current)
     
     ' If exactly 3 parts (SemVer without pre-release), add "~"
     ' This makes "1.0.0" > "1.0.0-beta" since "~" is largest ASCII char
@@ -1501,29 +1476,67 @@ end function
 ' Comparison helper with type coercion
 ' ===================================================================
 function GrowthBook__compare(v1 as dynamic, v2 as dynamic, op as string) as boolean
-    ' Handle invalid
-    if v1 = invalid then v1 = 0
-    
-    t1 = type(v1)
-    t2 = type(v2)
-    
-    ' Coerce strings to numbers if types differ and one is already a number
-    isNumeric1 = (t1 = "roInteger" or t1 = "Integer" or t1 = "roFloat" or t1 = "Float" or t1 = "Double" or t1 = "LongInteger")
-    isNumeric2 = (t2 = "roInteger" or t2 = "Integer" or t2 = "roFloat" or t2 = "Float" or t2 = "Double" or t2 = "LongInteger")
-    
-    if t1 <> t2
-        if isNumeric1 and (t2 = "roString" or t2 = "String")
-            v2 = Val(v2)
-        else if isNumeric2 and (t1 = "roString" or t1 = "String")
-            v1 = Val(v1)
-        end if
-    end if
+    ' No coercion: both sides must be numbers, or both strings (compared as text)
+    if not m._isOrderable(v1, v2) then return false
     
     if op = "$lt" then return v1 < v2
     if op = "$lte" then return v1 <= v2
     if op = "$gt" then return v1 > v2
     if op = "$gte" then return v1 >= v2
     
+    return false
+end function
+
+' ===================================================================
+' JSON type of a value: "string", "number", "boolean", "array", "object" or "null"
+' ===================================================================
+function GrowthBook__jsonType(value as dynamic) as string
+    t = type(value)
+    if t = "roString" or t = "String" then return "string"
+    if t = "roInteger" or t = "Integer" or t = "roFloat" or t = "Float" or t = "roDouble" or t = "Double" or t = "roLongInteger" or t = "LongInteger" then return "number"
+    if t = "roBoolean" or t = "Boolean" then return "boolean"
+    if t = "roArray" then return "array"
+    if t = "roAssociativeArray" then return "object"
+    if t = "Invalid" or t = "roInvalid" or t = "<uninitialized>" then return "null"
+    return "unknown"
+end function
+
+' ===================================================================
+' True when both values are numbers, or both are strings
+' Booleans, null and mismatched types are not ordered
+' ===================================================================
+function GrowthBook__isOrderable(v1 as dynamic, v2 as dynamic) as boolean
+    t = m._jsonType(v1)
+    return (t = "number" or t = "string") and t = m._jsonType(v2)
+end function
+
+' ===================================================================
+' Strict equality: different JSON types are never equal
+' ===================================================================
+function GrowthBook__valuesEqual(v1 as dynamic, v2 as dynamic) as boolean
+    t = m._jsonType(v1)
+    if t <> m._jsonType(v2) then return false
+    if t = "null" then return true
+    if t = "array" or t = "object" then return m._deepEqual(v1, v2)
+    return v1 = v2
+end function
+
+' ===================================================================
+' True when actual (or, for an array, any of its elements) equals an
+' element of expected. With insensitive, strings are compared ignoring case.
+' ===================================================================
+function GrowthBook__isIn(actual as dynamic, expected as object, insensitive as boolean) as boolean
+    values = [actual]
+    if type(actual) = "roArray" then values = actual
+    for each v in values
+        for each e in expected
+            if insensitive and m._jsonType(v) = "string" and m._jsonType(e) = "string"
+                if LCase(v) = LCase(e) then return true
+            else if m._valuesEqual(v, e)
+                return true
+            end if
+        end for
+    end for
     return false
 end function
 
@@ -1540,20 +1553,19 @@ function GrowthBook__deepEqual(val1 as dynamic, val2 as dynamic) as boolean
         return false
     end if
     
-    ' Type must match
-    type1 = type(val1)
-    type2 = type(val2)
-    if type1 <> type2
+    ' JSON type must match, so "10" never equals 10
+    type1 = m._jsonType(val1)
+    if type1 <> m._jsonType(val2)
         return false
     end if
     
     ' Primitives
-    if type1 = "roString" or type1 = "roInteger" or type1 = "roFloat" or type1 = "roBoolean" or type1 = "String" or type1 = "Integer" or type1 = "Boolean"
+    if type1 = "string" or type1 = "number" or type1 = "boolean"
         return val1 = val2
     end if
     
     ' Arrays
-    if type1 = "roArray"
+    if type1 = "array"
         if val1.Count() <> val2.Count()
             return false
         end if
@@ -1566,7 +1578,7 @@ function GrowthBook__deepEqual(val1 as dynamic, val2 as dynamic) as boolean
     end if
     
     ' Objects
-    if type1 = "roAssociativeArray"
+    if type1 = "object"
         ' Check if all keys in val1 exist in val2 with same values
         for each key in val1
             if not val2.DoesExist(key)
@@ -2120,7 +2132,7 @@ function GrowthBook__getStickyBucketVariation(rule as object, featureKey as stri
     currentKey = m._getStickyBucketExperimentKey(expKey, bucketVersion)
     foundInPrimary = assignments.DoesExist(currentKey)
     
-    if not foundInPrimary and rule.fallbackAttribute <> invalid and rule.fallbackAttribute <> ""
+    if rule.fallbackAttribute <> invalid and rule.fallbackAttribute <> ""
         attrVal = m._getAttributeValue(rule.fallbackAttribute)
         if attrVal <> invalid
             valStr = ""
@@ -2128,14 +2140,12 @@ function GrowthBook__getStickyBucketVariation(rule as object, featureKey as stri
             if valStr <> ""
                 doc = m._stickyBucketAssignmentDocs[rule.fallbackAttribute + "||" + valStr]
                 if doc <> invalid and doc.assignments <> invalid
-                    if doc.assignments.DoesExist(currentKey)
-                        ' Only use fallback if we don't already have one from primary
-                        ' OR if we want to merge them but prefer primary for the same key
-                        for each k in doc.assignments
-                            if not assignments.DoesExist(k) then assignments[k] = doc.assignments[k]
-                        end for
-                        source = "fallback"
-                    end if
+                    ' Merge every fallback assignment, preferring primary for the same key,
+                    ' so an old bucket version stored under the fallback still blocks
+                    for each k in doc.assignments
+                        if not assignments.DoesExist(k) then assignments[k] = doc.assignments[k]
+                    end for
+                    if not foundInPrimary and doc.assignments.DoesExist(currentKey) then source = "fallback"
                 end if
             end if
         end if

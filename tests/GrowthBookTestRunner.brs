@@ -362,6 +362,20 @@ function GrowthBookTestRunner_runFeatureTest(test as object) as object
     featureKey = test[2]
     expected = test[3]
     
+    ' Contextual bandit rules reference a bandit payload this SDK does not support yet
+    if context.features <> invalid
+        for each fk in context.features
+            f = context.features[fk]
+            if type(f) = "roAssociativeArray" and type(f.rules) = "roArray"
+                for each r in f.rules
+                    if type(r) = "roAssociativeArray" and r.DoesExist("contextualBanditRef")
+                        return { status: "skipped", name: testName }
+                    end if
+                end for
+            end if
+        end for
+    end if
+    
     ' Build config from context
     config = { http: {} }
     if context.attributes <> invalid then config.attributes = context.attributes

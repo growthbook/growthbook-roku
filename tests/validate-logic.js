@@ -74,52 +74,45 @@ class GrowthBook {
         this._stickyBucketAssignmentDocs = config.stickyBucketAssignmentDocs || {};
     }
 
-    // Evaluate conditions (mirrors your BrightScript implementation)
+    // Evaluate conditions (mirrors your BrightScript implementation).
+    // Passes only when the condition is known to pass
     _evaluateConditions(condition) {
+        return this._evalConditionResult(condition) === true;
+    }
+
+    // true, false, or null when the result depends on an operator or saved
+    // group type this SDK doesn't support. A false entry decides the condition
+    _evalConditionResult(condition) {
         if (!condition || typeof condition !== 'object') {
             return true;
         }
 
-        // Empty condition
-        if (Object.keys(condition).length === 0) {
-            return true;
-        }
-
         // Process all conditions - ALL must pass (AND logic at top level)
+        let result = true;
         for (const [attr, conditionValue] of Object.entries(condition)) {
             // Handle top-level logical operators
-            if (attr === '$or') {
-                if (!Array.isArray(conditionValue) || conditionValue.length === 0) {
-                    continue;
-                }
-                if (!conditionValue.some(c => this._evaluateConditions(c))) {
-                    return false;
-                }
-                continue;
-            }
-
-            if (attr === '$nor') {
-                if (!Array.isArray(conditionValue)) continue;
-                if (conditionValue.some(c => this._evaluateConditions(c))) {
-                    return false;
-                }
+            if (attr === '$or' || attr === '$nor') {
+                let r = this._evalOrResult(conditionValue);
+                if (attr === '$nor' && r !== null) r = !r;
+                if (r === false) return false;
+                if (r === null) result = null;
                 continue;
             }
 
             if (attr === '$and') {
-                if (!Array.isArray(conditionValue) || conditionValue.length === 0) {
-                    continue;
-                }
-                if (!conditionValue.every(c => this._evaluateConditions(c))) {
-                    return false;
+                if (!Array.isArray(conditionValue)) continue;
+                for (const c of conditionValue) {
+                    const r = this._evalConditionResult(c);
+                    if (r === false) return false;
+                    if (r === null) result = null;
                 }
                 continue;
             }
 
             if (attr === '$not') {
-                if (this._evaluateConditions(conditionValue)) {
-                    return false;
-                }
+                const r = this._evalConditionResult(conditionValue);
+                if (r === true) return false;
+                if (r === null) result = null;
                 continue;
             }
 
@@ -127,8 +120,14 @@ class GrowthBook {
 
             const value = this._getAttributeValue(attr);
 
-            if (typeof conditionValue === 'object' && conditionValue !== null && !Array.isArray(conditionValue)) {
-                // Operator conditions
+            // An object whose keys all start with "$" holds operators. Any other
+            // object, including one mixing operators and fields, is a plain value
+            const isOperatorObject = typeof conditionValue === 'object' && conditionValue !== null &&
+                !Array.isArray(conditionValue) && Object.keys(conditionValue).every(k => k.startsWith('$'));
+
+            if (isOperatorObject) {
+                // Operator conditions. An empty object has no operators, so it passes
+                let valueUnknown = false;
                 if ('$eq' in conditionValue && !this._valuesEqual(value, conditionValue.$eq)) return false;
                 if ('$ne' in conditionValue && this._valuesEqual(value, conditionValue.$ne)) return false;
                 // No coercion: both sides must be numbers, or both strings
@@ -207,28 +206,33 @@ class GrowthBook {
 
                 if ('$elemMatch' in conditionValue) {
                     if (!Array.isArray(value)) return false;
-                    let found = false;
+                    const expected = conditionValue.$elemMatch;
+                    if (typeof expected !== 'object' || expected === null || Array.isArray(expected)) return false;
+                    // Operators test each element itself. A condition, including one that
+                    // only uses $or, $and, $nor or $savedGroup, tests each element's fields
+                    const perElement = Object.keys(expected).every(k => k.startsWith('$') &&
+                        !['$or', '$and', '$nor', '$savedGroup'].includes(k));
+                    let matched = false;
                     for (const item of value) {
+                        // Only skip null elements; 0, "" and false are still tested
+                        if (item === null || item === undefined) continue;
                         let itemAttrs;
                         let tempCond;
-                        
-                        if (typeof item === 'object' && item !== null && !Array.isArray(item)) {
-                            // For objects, evaluate condition directly against item
-                            itemAttrs = item;
-                            tempCond = conditionValue.$elemMatch;
-                        } else {
-                            // For primitives, wrap in special "_" attribute
+                        if (perElement) {
                             itemAttrs = { _: item };
-                            tempCond = { _: conditionValue.$elemMatch };
+                            tempCond = { _: expected };
+                        } else {
+                            // A non-object element has no fields, so every path is missing
+                            itemAttrs = (typeof item === 'object' && !Array.isArray(item)) ? item : {};
+                            tempCond = expected;
                         }
-                        
                         const tempGB = new GrowthBook({ attributes: itemAttrs, savedGroups: this.savedGroups });
-                        if (tempGB._evaluateConditions(tempCond)) {
-                            found = true;
-                            break;
-                        }
+                        const r = tempGB._evalConditionResult(tempCond);
+                        if (r === true) { matched = true; break; }
+                        if (r === null) matched = null;
                     }
-                    if (!found) return false;
+                    if (matched === null) valueUnknown = true;
+                    else if (!matched) return false;
                 }
 
                 if ('$size' in conditionValue) {
@@ -237,8 +241,9 @@ class GrowthBook {
                         if (!this._valuesEqual(value.length, conditionValue.$size)) return false;
                     } else if (typeof conditionValue.$size === 'object') {
                         const tempGB = new GrowthBook({ attributes: { _size: value.length }, savedGroups: this.savedGroups });
-                        const tempCond = { _size: conditionValue.$size };
-                        if (!tempGB._evaluateConditions(tempCond)) return false;
+                        const r = tempGB._evalConditionResult({ _size: conditionValue.$size });
+                        if (r === false) return false;
+                        if (r === null) valueUnknown = true;
                     }
                 }
 
@@ -251,57 +256,74 @@ class GrowthBook {
                     }
                 }
 
-                if ('$inGroup' in conditionValue) {
-                    const groupId = conditionValue.$inGroup;
-                    if (typeof groupId !== 'string') return false;
-                    const savedGroup = this.savedGroups[groupId];
-                    if (!savedGroup) return false;
-                    if (!Array.isArray(savedGroup)) return false;
-                    if (!savedGroup.includes(value)) return false;
-                }
-
-                if ('$notInGroup' in conditionValue) {
-                    const groupId = conditionValue.$notInGroup;
-                    if (typeof groupId !== 'string') return false;
-                    const savedGroup = this.savedGroups[groupId];
-                    if (!savedGroup) return true; // Group not found, so not in group
-                    if (!Array.isArray(savedGroup)) return false;
-                    if (savedGroup.includes(value)) return false;
+                for (const op of ['$inGroup', '$notInGroup']) {
+                    if (op in conditionValue) {
+                        const groupId = conditionValue[op];
+                        if (typeof groupId !== 'string') return false;
+                        const values = this._savedGroupValues(groupId);
+                        if (values === null) {
+                            // A group type added after this SDK was built
+                            valueUnknown = true;
+                        } else if (!Array.isArray(values)) {
+                            // A condition group or a malformed entry matches nobody
+                            return false;
+                        } else {
+                            const found = values.some(member => this._valuesEqual(value, member));
+                            if (found !== (op === '$inGroup')) return false;
+                        }
+                    }
                 }
 
                 if ('$not' in conditionValue) {
                     // Negation operator on attribute value
                     const tempGB = new GrowthBook({ attributes: this.attributes, savedGroups: this.savedGroups });
-                    const tempCond = { [attr]: conditionValue.$not };
-                    if (tempGB._evaluateConditions(tempCond)) {
-                        return false;
-                    }
+                    const r = tempGB._evalConditionResult({ [attr]: conditionValue.$not });
+                    if (r === true) return false;
+                    if (r === null) valueUnknown = true;
                 }
 
-                // Check for unknown operators (operators starting with $)
                 const knownOps = ['$eq', '$ne', '$lt', '$lte', '$gt', '$gte', '$veq', '$vne', '$vlt', '$vlte', '$vgt', '$vgte', '$in', '$ini', '$nin', '$nini', '$exists', '$type', '$regex', '$regexi', '$elemMatch', '$size', '$all', '$alli', '$inGroup', '$notInGroup', '$not'];
-                let hasOperator = false;
                 for (const key of Object.keys(conditionValue)) {
-                    if (key.startsWith('$')) {
-                        if (!knownOps.includes(key)) {
-                            // Unknown operator - fail the condition
-                            return false;
-                        }
-                        hasOperator = true;
-                    }
+                    // Keys that belong on a condition, not on a value, never match
+                    if (['$or', '$and', '$nor', '$savedGroup'].includes(key)) return false;
+                    // An operator this SDK doesn't support: the client's SDK may
+                    if (!knownOps.includes(key)) valueUnknown = true;
                 }
-                
-                // If no operators found, treat as direct equality
-                if (!hasOperator) {
-                    if (!this._deepEqual(value, conditionValue)) return false;
-                }
+
+                if (valueUnknown) result = null;
             } else {
                 // Direct equality
                 if (!this._deepEqual(value, conditionValue)) return false;
             }
         }
 
-        return true;
+        return result;
+    }
+
+    // $or: true if any condition passes, null if none passes but one is unknown,
+    // false otherwise. An empty or non-array list passes, as in JS
+    _evalOrResult(conditions) {
+        if (!Array.isArray(conditions) || conditions.length === 0) return true;
+        let result = false;
+        for (const c of conditions) {
+            const r = this._evalConditionResult(c);
+            if (r === true) return true;
+            if (r === null) result = null;
+        }
+        return result;
+    }
+
+    // Values of a saved group for $inGroup / $notInGroup: an array, false for a
+    // group that matches nobody, or null for a group type added after this SDK
+    // was built. An unknown id behaves like an empty list
+    _savedGroupValues(groupId) {
+        if (!Object.prototype.hasOwnProperty.call(this.savedGroups, groupId)) return [];
+        const entry = this.savedGroups[groupId];
+        if (Array.isArray(entry)) return entry;
+        if (!entry || typeof entry !== 'object') return false;
+        if (entry.type === 'list') return Array.isArray(entry.values) ? entry.values : false;
+        if (entry.type === 'condition') return false;
+        return null;
     }
 
     _getAttributeValue(attr) {
@@ -309,7 +331,7 @@ class GrowthBook {
             const parts = attr.split('.');
             let value = this.attributes;
             for (const part of parts) {
-                if (value && typeof value === 'object') {
+                if (value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, part)) {
                     value = value[part];
                 } else {
                     return null;
@@ -317,6 +339,8 @@ class GrowthBook {
             }
             return value === undefined ? null : value;
         }
+        // Own keys only, like a BrightScript associative array
+        if (!Object.prototype.hasOwnProperty.call(this.attributes, attr)) return null;
         const val = this.attributes[attr];
         return val === undefined ? null : val;
     }

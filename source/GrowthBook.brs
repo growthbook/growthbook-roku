@@ -46,6 +46,9 @@ function GrowthBook(config as object) as object
         _loadFeaturesFromAPI: GrowthBook__loadFeaturesFromAPI,
         _parseFeatures: GrowthBook__parseFeatures,
         _evaluateConditions: GrowthBook__evaluateConditions,
+        _evalConditionResult: GrowthBook__evalConditionResult,
+        _evalOrResult: GrowthBook__evalOrResult,
+        _savedGroupValues: GrowthBook__savedGroupValues,
         _getAttributeValue: GrowthBook__getAttributeValue,
         _fnv1a32: GrowthBook__fnv1a32,
         _longToStr: GrowthBook__longToStr,
@@ -834,8 +837,21 @@ end function
 
 ' ===================================================================
 ' Evaluate conditions (rules) against user attributes
+' Passes only when the condition is known to pass: a condition that
+' depends on an operator or saved group type this SDK doesn't support fails
 ' ===================================================================
 function GrowthBook__evaluateConditions(condition as object) as boolean
+    r = m._evalConditionResult(condition)
+    if r = invalid then return false
+    return r
+end function
+
+' ===================================================================
+' Evaluate a condition to true, false, or invalid when the result depends on
+' an operator or saved group type this SDK doesn't support. A false entry
+' decides the condition wherever an unsupported one is
+' ===================================================================
+function GrowthBook__evalConditionResult(condition as object) as dynamic
     if condition = invalid
         return true
     end if
@@ -850,37 +866,26 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
     end if
     
     ' Process all conditions - ALL must pass (AND logic at top level)
+    result = true
     for each attr in condition
         ' Handle logical operators
         if attr = "$or"
-            if type(condition["$or"]) <> "roArray"
-                continue for
-            end if
-            if condition["$or"].Count() = 0
-                continue for
-            end if
-            orPassed = false
-            for each subcond in condition["$or"]
-                if m._evaluateConditions(subcond)
-                    orPassed = true
-                    exit for
-                end if
-            end for
-            if not orPassed
+            r = m._evalOrResult(condition["$or"])
+            if r = invalid
+                result = invalid
+            else if not r
                 return false
             end if
             continue for
         end if
         
         if attr = "$nor"
-            if type(condition["$nor"]) <> "roArray"
-                continue for
+            r = m._evalOrResult(condition["$nor"])
+            if r = invalid
+                result = invalid
+            else if r
+                return false
             end if
-            for each subcond in condition["$nor"]
-                if m._evaluateConditions(subcond)
-                    return false
-                end if
-            end for
             continue for
         end if
         
@@ -888,11 +893,11 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
             if type(condition["$and"]) <> "roArray"
                 continue for
             end if
-            if condition["$and"].Count() = 0
-                continue for
-            end if
             for each subcond in condition["$and"]
-                if not m._evaluateConditions(subcond)
+                r = m._evalConditionResult(subcond)
+                if r = invalid
+                    result = invalid
+                else if not r
                     return false
                 end if
             end for
@@ -900,7 +905,10 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
         end if
         
         if attr = "$not"
-            if m._evaluateConditions(condition["$not"])
+            r = m._evalConditionResult(condition["$not"])
+            if r = invalid
+                result = invalid
+            else if r
                 return false
             end if
             continue for
@@ -911,8 +919,22 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
         value = m._getAttributeValue(attr)
         condition_value = condition[attr]
         
+        ' An object whose keys all start with "$" holds operators. Any other
+        ' object, including one mixing operators and fields, is a plain value
+        isOperatorObject = false
         if type(condition_value) = "roAssociativeArray"
-            ' Operator conditions
+            isOperatorObject = true
+            for each key in condition_value
+                if Left(key, 1) <> "$"
+                    isOperatorObject = false
+                    exit for
+                end if
+            end for
+        end if
+        
+        if isOperatorObject
+            ' Operator conditions. An empty object has no operators, so it passes
+            valueUnknown = false
             if condition_value["$eq"] <> invalid
                 if not m._valuesEqual(value, condition_value["$eq"])
                     return false
@@ -1071,26 +1093,50 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
                 if value = invalid or type(value) <> "roArray"
                     return false
                 end if
-                found = false
+                expected = condition_value["$elemMatch"]
+                if type(expected) <> "roAssociativeArray"
+                    return false
+                end if
+                ' Operators test each element itself. A condition, including one
+                ' that only uses $or, $and, $nor or $savedGroup, tests each
+                ' element's fields
+                perElement = true
+                for each key in expected
+                    if Left(key, 1) <> "$" or key = "$or" or key = "$and" or key = "$nor" or key = "$savedGroup"
+                        perElement = false
+                        exit for
+                    end if
+                end for
+                matched = false
                 ' Create temp instance once outside loop for performance
                 tempGB = GrowthBook({ attributes: {}, savedGroups: m.savedGroups, http: {} })
                 for each item in value
-                    if type(condition_value["$elemMatch"]) = "roAssociativeArray"
-                        ' Update attributes (reuse instance) and prepare condition
-                        if type(item) = "roAssociativeArray"
-                            tempGB.attributes = item
-                            tempCond = condition_value["$elemMatch"]
-                        else
+                    ' Only skip null elements; 0, "" and false are still tested
+                    if item <> invalid
+                        if perElement
                             tempGB.attributes = { "_": item }
-                            tempCond = { "_": condition_value["$elemMatch"] }
+                            tempCond = { "_": expected }
+                        else
+                            ' A non-object element has no fields, so every path is missing
+                            if type(item) = "roAssociativeArray"
+                                tempGB.attributes = item
+                            else
+                                tempGB.attributes = {}
+                            end if
+                            tempCond = expected
                         end if
-                        if tempGB._evaluateConditions(tempCond)
-                            found = true
+                        r = tempGB._evalConditionResult(tempCond)
+                        if r = invalid
+                            matched = invalid
+                        else if r
+                            matched = true
                             exit for
                         end if
                     end if
                 end for
-                if not found
+                if matched = invalid
+                    valueUnknown = true
+                else if not matched
                     return false
                 end if
             end if
@@ -1102,8 +1148,11 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
                 actualSize = value.Count()
                 if type(expectedSize) = "roAssociativeArray"
                     ' Nested size condition - create temp GB with size as attribute
-                    tempGB = GrowthBook({ attributes: { "_size": actualSize }, http: {} })
-                    if not tempGB._evaluateConditions({ "_size": expectedSize })
+                    tempGB = GrowthBook({ attributes: { "_size": actualSize }, savedGroups: m.savedGroups, http: {} })
+                    r = tempGB._evalConditionResult({ "_size": expectedSize })
+                    if r = invalid
+                        valueUnknown = true
+                    else if not r
                         return false
                     end if
                 else
@@ -1126,101 +1175,64 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
                     end for
                 end if
             end for
-            if condition_value["$inGroup"] <> invalid
-                ' Check if value is in a saved group
-                groupId = condition_value["$inGroup"]
-                if type(groupId) <> "roString" and type(groupId) <> "String"
-                    return false
-                end if
-                ' Get the saved group
-                if m.savedGroups.DoesExist(groupId)
-                    savedGroup = m.savedGroups[groupId]
-                    if type(savedGroup) = "roArray"
-                        ' Check if value is in the group
+            for each groupOp in ["$inGroup", "$notInGroup"]
+                if condition_value[groupOp] <> invalid
+                    groupId = condition_value[groupOp]
+                    if type(groupId) <> "roString" and type(groupId) <> "String"
+                        return false
+                    end if
+                    groupValues = m._savedGroupValues(groupId)
+                    if groupValues = invalid
+                        ' A group type added after this SDK was built
+                        valueUnknown = true
+                    else if type(groupValues) <> "roArray"
+                        ' A condition group or a malformed entry matches nobody
+                        return false
+                    else
                         found = false
-                        for each groupMember in savedGroup
+                        for each groupMember in groupValues
                             if m._valuesEqual(value, groupMember)
                                 found = true
                                 exit for
                             end if
                         end for
-                        if not found
+                        if found <> (groupOp = "$inGroup")
                             return false
                         end if
-                    else
-                        return false
                     end if
-                else
-                    ' Group not found
-                    return false
                 end if
-            end if
-            if condition_value["$notInGroup"] <> invalid
-                ' Check if value is NOT in a saved group
-                groupId = condition_value["$notInGroup"]
-                if type(groupId) <> "roString" and type(groupId) <> "String"
-                    return false
-                end if
-                ' Get the saved group
-                if m.savedGroups.DoesExist(groupId)
-                    savedGroup = m.savedGroups[groupId]
-                    if type(savedGroup) = "roArray"
-                        ' Check if value is in the group
-                        found = false
-                        for each groupMember in savedGroup
-                            if m._valuesEqual(value, groupMember)
-                                found = true
-                                exit for
-                            end if
-                        end for
-                        if found
-                            return false
-                        end if
-                    else
-                        return false
-                    end if
-                else
-                    ' Group not found - value is not in group, so passes _notInGroup
-                    return true
-                end if
-            end if
+            end for
             if condition_value["$not"] <> invalid
                 ' Negation operator on attribute value
                 tempGB = GrowthBook({ attributes: m.attributes, savedGroups: m.savedGroups, http: {} })
                 tempCondition = {}
                 tempCondition[attr] = condition_value["$not"]
-                if tempGB._evaluateConditions(tempCondition)
+                r = tempGB._evalConditionResult(tempCondition)
+                if r = invalid
+                    valueUnknown = true
+                else if r
                     return false
                 end if
             end if
             
-            ' Check for unknown operators (operators starting with $)
-            hasOperator = false
+            knownOps = ["$eq", "$ne", "$lt", "$lte", "$gt", "$gte", "$veq", "$vne", "$vlt", "$vlte", "$vgt", "$vgte", "$in", "$ini", "$nin", "$nini", "$exists", "$type", "$regex", "$regexi", "$elemMatch", "$size", "$all", "$alli", "$inGroup", "$notInGroup", "$not"]
             for each key in condition_value
-                if Left(key, 1) = "$"
-                    ' Check if it's a known operator
-                    knownOps = ["$eq", "$ne", "$lt", "$lte", "$gt", "$gte", "$veq", "$vne", "$vlt", "$vlte", "$vgt", "$vgte", "$in", "$ini", "$nin", "$nini", "$exists", "$type", "$regex", "$regexi", "$elemMatch", "$size", "$all", "$alli", "$inGroup", "$notInGroup", "$not"]
-                    isKnown = false
-                    for each op in knownOps
-                        if key = op
-                            isKnown = true
-                            exit for
-                        end if
-                    end for
-                    if not isKnown
-                        ' Unknown operator - fail the condition
-                        return false
-                    end if
-                    hasOperator = true
+                ' Keys that belong on a condition, not on a value, never match
+                if key = "$or" or key = "$and" or key = "$nor" or key = "$savedGroup"
+                    return false
                 end if
+                isKnown = false
+                for each op in knownOps
+                    if key = op
+                        isKnown = true
+                        exit for
+                    end if
+                end for
+                ' An operator this SDK doesn't support: the client's SDK may
+                if not isKnown then valueUnknown = true
             end for
             
-            ' If no operators found, treat as direct equality
-            if not hasOperator
-                if not m._deepEqual(value, condition_value)
-                    return false
-                end if
-            end if
+            if valueUnknown then result = invalid
         else
             ' Direct equality
             if not m._deepEqual(value, condition_value)
@@ -1229,7 +1241,48 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
         end if
     end for
     
-    return true
+    return result
+end function
+
+' ===================================================================
+' $or: true if any condition passes, invalid if none passes but one is
+' unknown, false otherwise. An empty or non-array list passes, as in JS
+' ===================================================================
+function GrowthBook__evalOrResult(conditions as dynamic) as dynamic
+    if type(conditions) <> "roArray" then return true
+    if conditions.Count() = 0 then return true
+    result = false
+    for each subcond in conditions
+        r = m._evalConditionResult(subcond)
+        if r = invalid
+            result = invalid
+        else if r
+            return true
+        end if
+    end for
+    return result
+end function
+
+' ===================================================================
+' Values of a saved group for $inGroup / $notInGroup: an array, false for a
+' group that matches nobody (a condition group or a malformed entry), or
+' invalid for a group type added after this SDK was built. An unknown id
+' behaves like an empty list
+' ===================================================================
+function GrowthBook__savedGroupValues(groupId as string) as dynamic
+    if m.savedGroups = invalid or not m.savedGroups.DoesExist(groupId) then return []
+    entry = m.savedGroups[groupId]
+    if type(entry) = "roArray" then return entry
+    if type(entry) <> "roAssociativeArray" then return false
+    groupType = entry["type"]
+    if type(groupType) = "roString" or type(groupType) = "String"
+        if groupType = "list"
+            if type(entry["values"]) = "roArray" then return entry["values"]
+            return false
+        end if
+        if groupType = "condition" then return false
+    end if
+    return invalid
 end function
 
 ' ===================================================================

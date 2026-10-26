@@ -14,7 +14,7 @@ Official [GrowthBook](https://www.growthbook.io/) SDK for Roku/BrightScript appl
 
 - 🚀 **Lightweight** - Core SDK is ~50KB, minimal memory footprint
 - ⚡ **Fast** - Feature evaluation in <1ms, optimized for Roku devices
-- 🎯 **Full Spec Alignment** - 401/401 native BrightScript tests passing (all 8 spec categories + smoke tests)
+- 🎯 **Full Spec Alignment** - 783 native BrightScript spec tests passing against spec 0.11.2 (8 spec categories + smoke tests)
 - 🧪 **A/B Testing** - Run experiments with accurate traffic splits and holdout groups
 - 🔄 **Consistent Bucketing** - Same user always sees same variation (cross-platform)
 - 📊 **Analytics Ready** - Tracking callbacks, feature usage events, and plugin system
@@ -793,7 +793,7 @@ See the `examples/` directory for complete working examples:
 npm test
 ```
 
-This runs both the JS validator (327 spec tests) and native BrightScript runner (401 tests) in sequence.
+This runs both the JS validator (702 spec tests) and native BrightScript runner (783 tests) in sequence.
 
 ### Individual Test Commands
 

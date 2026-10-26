@@ -7,6 +7,10 @@
     ["$in object",{"x":{"$in":[{"a":1}]}},{"x":{"a":1}},false],
     ["$in nested array",{"x":{"$in":[[1]]}},{"x":[[1]]},false],
     ["$nin object",{"x":{"$nin":[{"a":1}]}},{"x":{"a":1}},true],
-    ["$ini nested array",{"x":{"$ini":[["a"]]}},{"x":[["A"]]},false]
+    ["$ini nested array",{"x":{"$ini":[["a"]]}},{"x":[["A"]]},false],
+    ["$inGroup typed list with array attribute",{"x":{"$inGroup":"g"}},{"x":[1,2]},true,{"g":{"type":"list","values":[1]}}],
+    ["$notInGroup typed list with array attribute",{"x":{"$notInGroup":"g"}},{"x":[1,2]},false,{"g":{"type":"list","values":[1]}}],
+    ["$inGroup legacy list with array attribute",{"x":{"$inGroup":"g"}},{"x":[3,1]},true,{"g":[1]}],
+    ["$inGroup typed list with no shared element",{"x":{"$inGroup":"g"}},{"x":[3]},false,{"g":{"type":"list","values":[1]}}]
   ]
 }

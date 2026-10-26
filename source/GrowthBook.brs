@@ -1183,13 +1183,8 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
                         ' A condition group or a malformed entry matches nobody
                         return false
                     else
-                        found = false
-                        for each groupMember in groupValues
-                            if m._valuesEqual(value, groupMember)
-                                found = true
-                                exit for
-                            end if
-                        end for
+                        ' Same membership as $in: an array attribute needs one shared element
+                        found = m._isIn(value, groupValues, false)
                         if found <> (groupOp = "$inGroup")
                             return false
                         end if

@@ -36,7 +36,8 @@ function GrowthBookTestRunner() as object
         _runFeatureTest: GrowthBookTestRunner_runFeatureTest,
         _runExperimentTest: GrowthBookTestRunner_runExperimentTest,
         _runDecryptTest: GrowthBookTestRunner_runDecryptTest,
-        _runStickyBucketTest: GrowthBookTestRunner_runStickyBucketTest
+        _runStickyBucketTest: GrowthBookTestRunner_runStickyBucketTest,
+        _checkSpecSections: GrowthBookTestRunner_checkSpecSections
     }
     
     return instance
@@ -85,11 +86,53 @@ function GrowthBookTestRunner_runAllTests() as object
         end if
     end for
     
+    m._checkSpecSections(categories)
+    
     m.runEncryptedInitTest()
 
     m.printSummary()
     return m.results
 end function
+
+' ================================================================
+' Spec sections this runner doesn't run, and why
+' ================================================================
+function GrowthBookTestRunner_excludedSections() as object
+    return {
+        pruneCondition: "The payload reduction methods (pruneCondition, reducePayload) are not implemented for client SDKs to start with",
+        reducePayload: "The payload reduction methods (pruneCondition, reducePayload) are not implemented for client SDKs to start with",
+        contextualBandit: "Contextual bandits are not implemented",
+        savedGroupReferencesV2: "$savedGroup references (saved groups v2) are not implemented",
+        getQueryStringOverride: "Query string overrides are not implemented",
+        urlRedirect: "URL redirects are a browser feature",
+        inNamespace: "No standalone runner yet; namespaces are covered by feature and run cases",
+        getEqualWeights: "No standalone runner yet; equal weights are covered by getBucketRange cases"
+    }
+end function
+
+' ================================================================
+' Fail when cases.json has a section this runner neither runs nor excludes,
+' so a new spec section can't be skipped silently
+' ================================================================
+sub GrowthBookTestRunner_checkSpecSections(categories as object)
+    excluded = GrowthBookTestRunner_excludedSections()
+    ran = {}
+    for each category in categories
+        ran[category] = true
+    end for
+    print ""
+    print "Spec sections not run:"
+    for each section in m.cases
+        if section <> "specVersion" and not ran.DoesExist(section)
+            if excluded.DoesExist(section)
+                print "  - " + section + ": " + excluded[section]
+            else
+                print "  - " + section + ": ERROR neither run nor excluded"
+                m.totalFailed = m.totalFailed + 1
+            end if
+        end if
+    end for
+end sub
 
 ' ================================================================
 ' Run Single Category

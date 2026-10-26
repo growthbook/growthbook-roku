@@ -1152,9 +1152,38 @@ function runTests(category, tests) {
 const results = {};
 const categories = ['evalCondition', 'hash', 'getBucketRange', 'chooseVariation', 'feature', 'decrypt', 'stickyBucket'];
 
+// Spec sections this validator doesn't run, and why. Keep in sync with
+// GrowthBookTestRunner_excludedSections in tests/GrowthBookTestRunner.brs
+const payloadReduction = 'The payload reduction methods (pruneCondition, reducePayload) are not implemented for client SDKs to start with';
+const excludedSections = {
+    pruneCondition: payloadReduction,
+    reducePayload: payloadReduction,
+    contextualBandit: 'Contextual bandits are not implemented',
+    savedGroupReferencesV2: '$savedGroup references (saved groups v2) are not implemented',
+    getQueryStringOverride: 'Query string overrides are not implemented',
+    urlRedirect: 'URL redirects are a browser feature',
+    inNamespace: 'No standalone runner yet; namespaces are covered by feature and run cases',
+    getEqualWeights: 'No standalone runner yet; equal weights are covered by getBucketRange cases',
+    run: 'Run by the native brs runner only',
+};
+
 for (const category of categories) {
     if (cases[category]) {
         results[category] = runTests(category, cases[category]);
+    }
+}
+
+// Fail when cases.json has a section that is neither run nor excluded, so a
+// new spec section can't be skipped silently
+let unlistedSections = 0;
+console.log('\nSpec sections not run:');
+for (const section of Object.keys(cases)) {
+    if (section === 'specVersion' || categories.includes(section)) continue;
+    if (excludedSections[section]) {
+        console.log(`  - ${section}: ${excludedSections[section]}`);
+    } else {
+        console.log(`  - ${section}: ERROR neither run nor excluded`);
+        unlistedSections++;
     }
 }
 
@@ -1178,6 +1207,8 @@ for (const [category, result] of Object.entries(results)) {
 
 console.log('─'.repeat(60));
 console.log(`TOTAL: ${totalPassed}/${totalTests} tests passed (${((totalPassed/totalTests)*100).toFixed(1)}%)`);
+
+totalFailed += unlistedSections;
 
 if (totalFailed === 0) {
     console.log('\n✅ All tests passed!');

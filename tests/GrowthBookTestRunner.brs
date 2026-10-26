@@ -314,14 +314,19 @@ function GrowthBookTestRunner_runGetBucketRangeTest(test as object) as object
     gb = GrowthBook({http: {}})
     
     ' Run test
-    actual = gb._getBucketRanges(numVariations, coverage, weights)
+    actual = gb._getBucketRanges(numVariations, gb._toDouble(coverage), weights)
     
-    ' Compare ranges with tolerance
-    tolerance = 0.001
+    ' Compare ranges with a tight double-precision tolerance (the JS SDK test
+    ' rounds both sides; 0.2 + 0.2 * 0.2 is 0.04000000000000001 in doubles)
+    tolerance# = 0.000000000001
     isMatch = (actual.Count() = expected.Count())
     if isMatch
         for i = 0 to actual.Count() - 1
-            if Abs(actual[i][0] - expected[i][0]) > tolerance or Abs(actual[i][1] - expected[i][1]) > tolerance
+            startDiff# = actual[i][0] - gb._toDouble(expected[i][0])
+            if startDiff# < 0 then startDiff# = -startDiff#
+            endDiff# = actual[i][1] - gb._toDouble(expected[i][1])
+            if endDiff# < 0 then endDiff# = -endDiff#
+            if startDiff# > tolerance# or endDiff# > tolerance#
                 isMatch = false
                 exit for
             end if
@@ -346,7 +351,7 @@ function GrowthBookTestRunner_runChooseVariationTest(test as object) as object
     gb = GrowthBook({http: {}})
     
     ' Run test
-    actual = gb._chooseVariation(n, ranges)
+    actual = gb._chooseVariation(gb._toDouble(n), ranges)
     
     if actual = expected
         return { status: "passed", name: testName }

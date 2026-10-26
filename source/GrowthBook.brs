@@ -58,6 +58,7 @@ function GrowthBook(config as object) as object
         _getBucketRanges: GrowthBook__getBucketRanges,
         _chooseVariation: GrowthBook__chooseVariation,
         _inRange: GrowthBook__inRange,
+        _toDouble: GrowthBook__toDouble,
         _deepEqual: GrowthBook__deepEqual,
         _compare: GrowthBook__compare,
         _jsonType: GrowthBook__jsonType,
@@ -705,9 +706,9 @@ function GrowthBook__evaluateExperiment(rule as object, result as object) as obj
         if rule.ranges <> invalid
             ranges = rule.ranges
         else
-            coverage = 1.0
-            if rule.coverage <> invalid then coverage = rule.coverage
-            ranges = m._getBucketRanges(rule.variations.Count(), coverage, rule.weights)
+            coverage# = 1
+            if rule.coverage <> invalid then coverage# = m._toDouble(rule.coverage)
+            ranges = m._getBucketRanges(rule.variations.Count(), coverage#, rule.weights)
         end if
         assigned = m._chooseVariation(n, ranges)
     end if
@@ -1341,12 +1342,12 @@ function GrowthBook__gbhash(seed as string, value as string, version as integer)
         combined = seed + value
         hash1& = m._fnv1a32(combined)
         hash2& = m._fnv1a32(m._longToStr(hash1&))
-        return (hash2& MOD 10000) / 10000.0
+        return (hash2& MOD 10000) / 10000#
     else if version = 1
         ' Version 1: fnv1a32(value + seed)
         combined = value + seed
         hash1& = m._fnv1a32(combined)
-        return (hash1& MOD 1000) / 1000.0
+        return (hash1& MOD 1000) / 1000#
     end if
     
     return invalid
@@ -1440,12 +1441,12 @@ end function
 ' Used for feature percentage rollouts (force rules with coverage)
 ' Note: Experiments use _getBucketRanges instead
 ' ===================================================================
-function GrowthBook__isIncludedInRollout(seed as string, hashValue as string, hashVersion as integer, coverage as float) as boolean
+function GrowthBook__isIncludedInRollout(seed as string, hashValue as string, hashVersion as integer, coverage as double) as boolean
     ' Coverage of 1 or more includes everyone
-    if coverage >= 1.0 then return true
+    if coverage >= 1 then return true
     
     ' Coverage of 0 or less excludes everyone
-    if coverage <= 0.0 then return false
+    if coverage <= 0 then return false
     
     ' Calculate hash for this user
     n = m._gbhash(seed, hashValue, hashVersion)
@@ -1459,7 +1460,7 @@ end function
 ' Get bucket ranges for variation assignment
 ' Converts weights and coverage into [start, end) ranges
 ' ===================================================================
-function GrowthBook__getBucketRanges(numVariations as integer, coverage as float, weights as object) as object
+function GrowthBook__getBucketRanges(numVariations as integer, coverage as double, weights as object) as object
     ' Return empty ranges if no variations
     if numVariations < 1 then return []
     
@@ -1467,38 +1468,48 @@ function GrowthBook__getBucketRanges(numVariations as integer, coverage as float
     if coverage < 0 then coverage = 0
     if coverage > 1 then coverage = 1
     
+    ' Weights come from JSON as single-precision Floats; widen them so the
+    ' range math below matches the double-precision JS SDK exactly
+    doubleWeights = []
+    if weights <> invalid
+        for each w in weights
+            doubleWeights.Push(m._toDouble(w))
+        end for
+    end if
+    weights = doubleWeights
+    
     ' Generate equal weights if not provided or invalid
     ' Equal weights = each variation gets 1/n of traffic
-    if weights = invalid or weights.Count() = 0 or weights.Count() <> numVariations
-        equalWeight = 1.0 / numVariations
+    if weights.Count() = 0 or weights.Count() <> numVariations
+        equalWeight# = 1# / numVariations
         weights = []
         for i = 0 to numVariations - 1
-            weights.Push(equalWeight)
+            weights.Push(equalWeight#)
         end for
     end if
     
     ' Validate weights sum (should be ~1.0)
-    weightSum = 0
+    weightSum# = 0
     for each w in weights
-        weightSum = weightSum + w
+        weightSum# = weightSum# + w
     end for
-    if weightSum < 0.99 or weightSum > 1.01
-        equalWeight = 1.0 / numVariations
+    if weightSum# < 0.99# or weightSum# > 1.01#
+        equalWeight# = 1# / numVariations
         weights = []
         for i = 0 to numVariations - 1
-            weights.Push(equalWeight)
+            weights.Push(equalWeight#)
         end for
     end if
     
     ' Build bucket ranges as [start, end] arrays
     ranges = []
-    cumulative = 0.0
+    cumulative# = 0
     for each w in weights
-        rangeStart = cumulative
-        cumulative = cumulative + w
+        rangeStart# = cumulative#
+        cumulative# = cumulative# + w
         ' Apply coverage: reduces each bucket by coverage percentage
-        rangeEnd = rangeStart + coverage * w
-        ranges.Push([rangeStart, rangeEnd])
+        rangeEnd# = rangeStart# + coverage * w
+        ranges.Push([rangeStart#, rangeEnd#])
     end for
     
     return ranges
@@ -1508,7 +1519,7 @@ end function
 ' Choose variation based on hash value and bucket ranges
 ' Returns variation index, or -1 if not in any bucket
 ' ===================================================================
-function GrowthBook__chooseVariation(n as float, ranges as object) as integer
+function GrowthBook__chooseVariation(n as double, ranges as object) as integer
     for i = 0 to ranges.Count() - 1
         if m._inRange(n, ranges[i])
             return i
@@ -1521,8 +1532,49 @@ end function
 ' Check if value is within a bucket range [start, end)
 ' Range is array: [0] = start, [1] = end
 ' ===================================================================
-function GrowthBook__inRange(n as float, range as object) as boolean
-    return n >= range[0] and n < range[1]
+function GrowthBook__inRange(n as double, range as object) as boolean
+    return n >= m._toDouble(range[0]) and n < m._toDouble(range[1])
+end function
+
+' ===================================================================
+' Widen a JSON number to Double for bucketing math
+' ParseJson returns single-precision Floats (unless the Roku OS 14.6+ "d"
+' flag is used), so a weight of 0.2 arrives as 0.20000000298... Widening
+' that directly would leave range ends ~1e-9 away from the JS SDK's doubles.
+' Instead, find the shortest decimal that round-trips to the same Float and
+' build the Double from that decimal. This reproduces the JS value exactly
+' for anything with up to 7 significant digits (0.2, 0.5999, 0.0001, ...).
+' Limitation: values that need more digits (e.g. 1/3) are only accurate to
+' Float precision because the parser already discarded the extra digits.
+' ===================================================================
+function GrowthBook__toDouble(value as dynamic) as double
+    t = type(value)
+    if t = "roDouble" or t = "Double" then return value
+    if t = "roString" or t = "String" then value = Val(value)
+    t = type(value)
+    if t = "roInteger" or t = "Integer" or t = "roLongInteger" or t = "LongInteger"
+        d# = value
+        return d#
+    end if
+    if t <> "roFloat" and t <> "Float" then return 0
+    
+    f! = value
+    neg = f! < 0
+    if neg then f! = -f!
+    d# = f!
+    scale# = 1
+    for p = 0 to 15
+        mantissa& = d# * scale# + 0.5#
+        candidate# = mantissa& / scale#
+        check! = candidate#
+        if check! = f!
+            d# = candidate#
+            exit for
+        end if
+        scale# = scale# * 10#
+    end for
+    if neg then d# = -d#
+    return d#
 end function
 
 ' ===================================================================
@@ -1711,8 +1763,7 @@ function GrowthBook__inNamespace(userId as string, namespace as object) as boole
     n = m._gbhash("__" + namespace[0], userId, 1)
     if n = invalid then return false
     
-    res = (n >= namespace[1] and n < namespace[2])
-    return res
+    return n >= m._toDouble(namespace[1]) and n < m._toDouble(namespace[2])
 end function
 
 ' ===================================================================
@@ -1917,8 +1968,10 @@ function GrowthBook__isRuleIncluded(rule as object, featureKey as string) as boo
         end for
         if not inAnyRange return false
     else if rule.coverage <> invalid and rule.variations = invalid
+        coverage# = m._toDouble(rule.coverage)
+        if coverage# = 0 return false
         n = m._gbhash(context.seed, context.hashValue, context.hashVersion)
-        if n = invalid or n >= rule.coverage return false
+        if n = invalid or n > coverage# return false
     end if
     
     return true

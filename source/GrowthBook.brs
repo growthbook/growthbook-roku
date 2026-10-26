@@ -465,14 +465,11 @@ function GrowthBook_evalFeature(key as string) as object
                                     return result
                                 end if
                                 
-                                gateFailed = (GrowthBook_toBoolean(parent.gate) and not parentResult.on)
-                                conditionFailed = false
-                                if parent.condition <> invalid
-                                    tempGB = GrowthBook({ attributes: { value: parentResult.value }, savedGroups: m.savedGroups, http: m.http })
-                                    if not tempGB._evaluateConditions(parent.condition) then conditionFailed = true
-                                end if
-                                
-                                if gateFailed or conditionFailed
+                                ' The condition alone decides; a gate only changes what a failure does
+                                parentCondition = parent.condition
+                                if parentCondition = invalid then parentCondition = {}
+                                tempGB = GrowthBook({ attributes: { value: parentResult.value }, savedGroups: m.savedGroups, http: m.http })
+                                if not tempGB._evaluateConditions(parentCondition)
                                     ' Only a gate blocks the feature; any other failing prerequisite skips this rule
                                     if not GrowthBook_toBoolean(parent.gate)
                                         skipRule = true
@@ -655,14 +652,10 @@ function GrowthBook__evaluateExperiment(rule as object, result as object) as obj
                     return result
                 end if
                 
-                gateFailed = (GrowthBook_toBoolean(parent.gate) and not parentResult.on)
-                conditionFailed = false
-                if parent.condition <> invalid
-                    tempGB = GrowthBook({ attributes: { value: parentResult.value }, savedGroups: m.savedGroups, http: m.http })
-                    if not tempGB._evaluateConditions(parent.condition) then conditionFailed = true
-                end if
-                
-                if gateFailed or conditionFailed
+                parentCondition = parent.condition
+                if parentCondition = invalid then parentCondition = {}
+                tempGB = GrowthBook({ attributes: { value: parentResult.value }, savedGroups: m.savedGroups, http: m.http })
+                if not tempGB._evaluateConditions(parentCondition)
                     m._log("Prerequisite failed")
                     return result
                 end if

@@ -559,20 +559,13 @@ class GrowthBook {
                                 return result;
                             }
                             
-                            // Check if parent gate is satisfied
-                            if (parent.gate && !parentResult.on) {
-                                result.source = 'prerequisite';
-                                this._evaluationStack.pop();
-                                return result;
-                            }
-                            
-                            // Check parent condition
-                            if (parent.condition) {
+                            // The condition alone decides; a gate only changes what a failure does
+                            {
                                 const tempGb = new GrowthBook({
                                     attributes: { value: parentResult.value },
                                     savedGroups: this.savedGroups
                                 });
-                                if (!tempGb._evaluateConditions(parent.condition)) {
+                                if (!tempGb._evaluateConditions(parent.condition || {})) {
                                     // Only a gate blocks the feature; any other failing prerequisite skips this rule
                                     if (!parent.gate) continue rules;
                                     result.source = 'prerequisite';

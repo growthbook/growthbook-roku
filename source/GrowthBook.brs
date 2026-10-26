@@ -65,6 +65,7 @@ function GrowthBook(config as object) as object
         _isOrderable: GrowthBook__isOrderable,
         _valuesEqual: GrowthBook__valuesEqual,
         _isIn: GrowthBook__isIn,
+        _isInAll: GrowthBook__isInAll,
         _trackExperiment: GrowthBook__trackExperiment,
         _trackFeatureUsage: GrowthBook__trackFeatureUsage,
         _evaluateExperiment: GrowthBook__evaluateExperiment,
@@ -1162,11 +1163,12 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
                     if type(value) <> "roArray" or type(condition_value[allOp]) <> "roArray"
                         return false
                     end if
-                    for each required in condition_value[allOp]
-                        if not m._isIn(required, value, allOp = "$alli")
-                            return false
-                        end if
-                    end for
+                    r = m._isInAll(value, condition_value[allOp], allOp = "$alli")
+                    if r = invalid
+                        valueUnknown = true
+                    else if not r
+                        return false
+                    end if
                 end if
             end for
             for each groupOp in ["$inGroup", "$notInGroup"]
@@ -1633,6 +1635,42 @@ function GrowthBook__isIn(actual as dynamic, expected as object, insensitive as 
         end for
     end for
     return false
+end function
+
+' ===================================================================
+' $all / $alli: true when every condition in expected passes for at least
+' one element of actual, invalid when none fails but one depends on an
+' operator this SDK doesn't support, false otherwise. Each condition can be
+' a value or an operator object. With insensitive, a string value is
+' compared ignoring case
+' ===================================================================
+function GrowthBook__isInAll(actual as object, expected as object, insensitive as boolean) as dynamic
+    tempGB = GrowthBook({ attributes: {}, savedGroups: m.savedGroups, http: {} })
+    result = true
+    for each required in expected
+        passed = false
+        for each item in actual
+            if insensitive and m._jsonType(required) = "string"
+                r = false
+                if m._jsonType(item) = "string" then r = (LCase(item) = LCase(required))
+            else
+                tempGB.attributes = { "_": item }
+                r = tempGB._evalConditionResult({ "_": required })
+            end if
+            if r = invalid
+                passed = invalid
+            else if r
+                passed = true
+                exit for
+            end if
+        end for
+        if passed = invalid
+            result = invalid
+        else if not passed
+            return false
+        end if
+    end for
+    return result
 end function
 
 ' ===================================================================

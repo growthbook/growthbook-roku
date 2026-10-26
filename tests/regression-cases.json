@@ -11,6 +11,17 @@
     ["$inGroup typed list with array attribute",{"x":{"$inGroup":"g"}},{"x":[1,2]},true,{"g":{"type":"list","values":[1]}}],
     ["$notInGroup typed list with array attribute",{"x":{"$notInGroup":"g"}},{"x":[1,2]},false,{"g":{"type":"list","values":[1]}}],
     ["$inGroup legacy list with array attribute",{"x":{"$inGroup":"g"}},{"x":[3,1]},true,{"g":[1]}],
-    ["$inGroup typed list with no shared element",{"x":{"$inGroup":"g"}},{"x":[3]},false,{"g":{"type":"list","values":[1]}}]
+    ["$inGroup typed list with no shared element",{"x":{"$inGroup":"g"}},{"x":[3]},false,{"g":{"type":"list","values":[1]}}],
+    ["$all evaluates each required condition",{"x":{"$all":[{"$gt":1}]}},{"x":[2]},true],
+    ["$alli evaluates each required condition",{"x":{"$alli":[{"$gt":1}]}},{"x":[2]},true],
+    ["$all condition that no element passes",{"x":{"$all":[{"$gt":5}]}},{"x":[2]},false],
+    ["$all array literal matches a nested array",{"x":{"$all":[[1]]}},{"x":[[1]]},true],
+    ["$all array literal doesn't unwrap",{"x":{"$all":[[1]]}},{"x":[1]},false],
+    ["$alli strings ignore case",{"x":{"$alli":["A","b"]}},{"x":["a","B","c"]},true],
+    ["$all strings keep case",{"x":{"$all":["A"]}},{"x":["a"]},false],
+    ["$alli object literal",{"x":{"$alli":[{"a":1}]}},{"x":[{"a":1}]},true],
+    ["$not with unknown operator inside $alli",{"$not":{"x":{"$alli":[{"$future":1}]}}},{"x":[2]},false],
+    ["$all with unknown operator and a match",{"x":{"$all":[{"$future":1},2]}},{"x":[2]},false],
+    ["$alli string with non-string elements",{"x":{"$alli":["A"]}},{"x":[1,null,"a"]},true]
   ]
 }

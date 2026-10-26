@@ -803,31 +803,36 @@ function GrowthBook_refreshFeatures() as boolean
 end function
 
 ' ===================================================================
-' Get attribute value (supports nested paths like "user.age")
+' Get attribute value (supports nested paths like "user.age"). Like JS
+' getPath, each part reads an object key or an array's own key: a canonical
+' index ("0", "1", ...) or "length"
 ' ===================================================================
 function GrowthBook__getAttributeValue(attr as string) as dynamic
-    ' Check for nested path (e.g., "father.age")
+    value = m.attributes
     if Instr(1, attr, ".") > 0
         parts = attr.Split(".")
-        value = m.attributes
-        
-        for each part in parts
-            if type(value) = "roAssociativeArray" and value.DoesExist(part)
-                value = value[part]
+    else
+        parts = [attr]
+    end if
+    for each part in parts
+        if type(value) = "roAssociativeArray"
+            if not value.DoesExist(part) then return invalid
+            value = value[part]
+        else if type(value) = "roArray"
+            if part = "length"
+                value = value.Count()
+            else if part = "0" or (Len(part) > 0 and Len(part) < 10 and Left(part, 1) <> "0" and CreateObject("roRegex", "^[0-9]+$", "").IsMatch(part))
+                index = part.ToInt()
+                if index >= value.Count() then return invalid
+                value = value[index]
             else
                 return invalid
             end if
-        end for
-        
-        return value
-    end if
-    
-    ' Simple attribute
-    if m.attributes.DoesExist(attr)
-        return m.attributes[attr]
-    end if
-    
-    return invalid
+        else
+            return invalid
+        end if
+    end for
+    return value
 end function
 
 ' ===================================================================
@@ -1113,8 +1118,10 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
                             tempGB.attributes = { "_": item }
                             tempCond = { "_": expected }
                         else
-                            ' A non-object element has no fields, so every path is missing
-                            if type(item) = "roAssociativeArray"
+                            ' Objects and arrays have fields (an array's are its
+                            ' indexes and length). Other elements have none, so
+                            ' every path is missing
+                            if type(item) = "roAssociativeArray" or type(item) = "roArray"
                                 tempGB.attributes = item
                             else
                                 tempGB.attributes = {}

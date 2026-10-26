@@ -45,6 +45,18 @@
     ["$exists null on missing",{"x":{"$exists":null}},{},true],
     ["$not null on a value",{"x":{"$not":null}},{"x":"a"},true],
     ["$not null on null",{"x":{"$not":null}},{"x":null},false],
-    ["$elemMatch null on a non-array",{"x":{"$elemMatch":null}},{"x":"a"},false]
+    ["$elemMatch null on a non-array",{"x":{"$elemMatch":null}},{"x":"a"},false],
+    ["$elemMatch $nor reads a nested array's index",{"x":{"$elemMatch":{"$nor":[{"0":1}]}}},{"x":[[1]]},false],
+    ["$elemMatch $or reads a nested array's index",{"x":{"$elemMatch":{"$or":[{"0":1}]}}},{"x":[[1]]},true],
+    ["$elemMatch $or reads a nested array's length",{"x":{"$elemMatch":{"$or":[{"length":2}]}}},{"x":[[1,2]]},true],
+    ["$elemMatch $or reads a nested path through arrays",{"x":{"$elemMatch":{"$or":[{"0.1":5}]}}},{"x":[[[4,5]]]},true],
+    ["$elemMatch $or ignores a non-canonical index",{"x":{"$elemMatch":{"$or":[{"00":1}]}}},{"x":[[1]]},false],
+    ["$elemMatch $or ignores an index past the end",{"x":{"$elemMatch":{"$or":[{"1":{"$exists":true}}]}}},{"x":[[1]]},false],
+    ["$all with $elemMatch $nor on nested arrays",{"x":{"$all":[{"$elemMatch":{"$nor":[{"0":1}]}}]}},{"x":[[[1]]]},false],
+    ["$all with $elemMatch $or on nested arrays",{"x":{"$all":[{"$elemMatch":{"$or":[{"0":1}]}}]}},{"x":[[[1]]]},true],
+    ["$alli with $elemMatch $nor on nested arrays",{"x":{"$alli":[{"$elemMatch":{"$nor":[{"0":1}]}}]}},{"x":[[[1]]]},false],
+    ["$alli with $elemMatch $or on nested arrays",{"x":{"$alli":[{"$elemMatch":{"$or":[{"0":1}]}}]}},{"x":[[[1]]]},true],
+    ["attribute path reads an array index",{"x.1":2},{"x":[1,2]},true],
+    ["attribute path reads an array length",{"x.length":2},{"x":[1,2]},true]
   ]
 }

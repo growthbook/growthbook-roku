@@ -38,5 +38,6 @@ tests/test-entry.brs
 # Test Channel - files copied by `npm run test:channel`
 test-channel/source/GrowthBook.brs
 test-channel/source/cases.json
+test-channel/source/regression-cases.json
 test-channel/source/GrowthBookTestRunner.brs
 test-channel/source/TestUtilities.brs

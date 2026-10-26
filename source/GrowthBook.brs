@@ -1609,13 +1609,15 @@ function GrowthBook__isOrderable(v1 as dynamic, v2 as dynamic) as boolean
 end function
 
 ' ===================================================================
-' Strict equality: different JSON types are never equal
+' Strict equality, as JS === on parsed JSON: different JSON types are never
+' equal, and an array or object never equals one parsed separately, even
+' with the same contents. Plain-value conditions use _deepEqual instead
 ' ===================================================================
 function GrowthBook__valuesEqual(v1 as dynamic, v2 as dynamic) as boolean
     t = m._jsonType(v1)
     if t <> m._jsonType(v2) then return false
     if t = "null" then return true
-    if t = "array" or t = "object" then return m._deepEqual(v1, v2)
+    if t = "array" or t = "object" then return false
     return v1 = v2
 end function
 

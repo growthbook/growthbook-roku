@@ -13,6 +13,7 @@ function GrowthBookTestRunner() as object
     instance = {
         ' State
         cases: invalid,
+        casesDir: "",
         results: {},
         totalPassed: 0,
         totalFailed: 0,
@@ -22,12 +23,14 @@ function GrowthBookTestRunner() as object
         loadCases: GrowthBookTestRunner_loadCases,
         runAllTests: GrowthBookTestRunner_runAllTests,
         runCategory: GrowthBookTestRunner_runCategory,
+        runRegressionCases: GrowthBookTestRunner_runRegressionCases,
         getResults: GrowthBookTestRunner_getResults,
         getResults: GrowthBookTestRunner_getResults,
         printSummary: GrowthBookTestRunner_printSummary,
         runEncryptedInitTest: GrowthBookTestRunner_runEncryptedInitTest,
         
         ' Private Methods (test runners)
+        _runTests: GrowthBookTestRunner_runTests,
         _runSingleTest: GrowthBookTestRunner_runSingleTest,
         _runEvalConditionTest: GrowthBookTestRunner_runEvalConditionTest,
         _runHashTest: GrowthBookTestRunner_runHashTest,
@@ -48,6 +51,14 @@ end function
 ' ================================================================
 function GrowthBookTestRunner_loadCases(filePath as string) as boolean
     m.cases = invalid
+    ' regression-cases.json sits next to cases.json
+    m.casesDir = ""
+    for i = Len(filePath) to 1 step -1
+        if Mid(filePath, i, 1) = "/"
+            m.casesDir = Left(filePath, i)
+            exit for
+        end if
+    end for
     
     ' Read file
     jsonString = ReadAsciiFile(filePath)
@@ -89,6 +100,8 @@ function GrowthBookTestRunner_runAllTests() as object
     m._checkSpecSections(categories)
     
     m.runEncryptedInitTest()
+
+    m.runRegressionCases(m.casesDir + "regression-cases.json")
 
     m.printSummary()
     return m.results
@@ -143,14 +156,37 @@ function GrowthBookTestRunner_runCategory(category as string) as object
         return { passed: 0, failed: 0, skipped: 0 }
     end if
     
-    tests = m.cases[category]
+    return m._runTests(category, category, m.cases[category])
+end function
+
+' ================================================================
+' Run this SDK's own regression cases (tests/regression-cases.json),
+' which use the same format as the matching cases.json sections. The
+' JS validator doesn't run them: they check the BrightScript code itself
+' ================================================================
+function GrowthBookTestRunner_runRegressionCases(filePath as string) as object
+    jsonString = ReadAsciiFile(filePath)
+    regression = invalid
+    if jsonString <> "" then regression = ParseJson(jsonString)
+    if regression = invalid or type(regression.evalCondition) <> "roArray"
+        print "ERROR: Could not load regression cases from: " + filePath
+        m.totalFailed = m.totalFailed + 1
+        return { passed: 0, failed: 1, skipped: 0 }
+    end if
+    return m._runTests("regression: evalCondition", "evalCondition", regression.evalCondition)
+end function
+
+' ================================================================
+' Run a list of tests of one category, recording results under label
+' ================================================================
+function GrowthBookTestRunner_runTests(label as string, category as string, tests as object) as object
     passed = 0
     failed = 0
     skipped = 0
     failures = []
     
     print ""
-    print "Running: " + category + " (" + Str(tests.Count()).Trim() + " tests)"
+    print "Running: " + label + " (" + Str(tests.Count()).Trim() + " tests)"
     print "----------------------------------------------------------------"
     
     for each test in tests
@@ -167,7 +203,7 @@ function GrowthBookTestRunner_runCategory(category as string) as object
     end for
     
     ' Store results
-    m.results[category] = {
+    m.results[label] = {
         passed: passed,
         failed: failed,
         skipped: skipped,
@@ -185,7 +221,7 @@ function GrowthBookTestRunner_runCategory(category as string) as object
     if tests.Count() > 0
         percentage = Int((passed / tests.Count()) * 100)
     end if
-    print category + ": " + Str(passed).Trim() + "/" + Str(tests.Count()).Trim() + " (" + Str(percentage).Trim() + "%)"
+    print label + ": " + Str(passed).Trim() + "/" + Str(tests.Count()).Trim() + " (" + Str(percentage).Trim() + "%)"
     
     ' Print failures (max 5)
     if failures.Count() > 0 and failures.Count() <= 5
@@ -204,7 +240,7 @@ function GrowthBookTestRunner_runCategory(category as string) as object
         end for
     end if
     
-    return m.results[category]
+    return m.results[label]
 end function
 
 ' ================================================================

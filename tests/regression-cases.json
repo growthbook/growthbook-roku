@@ -1,0 +1,12 @@
+{
+  "description": "Cases the shared cases.json doesn't cover, checked against the JS SDK. Same format as its evalCondition section",
+  "evalCondition": [
+    ["$eq object",{"x":{"$eq":{"a":1}}},{"x":{"a":1}},false],
+    ["$eq array",{"x":{"$eq":[1]}},{"x":[1]},false],
+    ["$ne object",{"x":{"$ne":{"a":1}}},{"x":{"a":1}},true],
+    ["$in object",{"x":{"$in":[{"a":1}]}},{"x":{"a":1}},false],
+    ["$in nested array",{"x":{"$in":[[1]]}},{"x":[[1]]},false],
+    ["$nin object",{"x":{"$nin":[{"a":1}]}},{"x":{"a":1}},true],
+    ["$ini nested array",{"x":{"$ini":[["a"]]}},{"x":[["A"]]},false]
+  ]
+}

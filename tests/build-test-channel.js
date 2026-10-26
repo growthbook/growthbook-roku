@@ -7,6 +7,7 @@ const channelDir = path.join(root, 'test-channel');
 const filesToCopy = [
     ['source/GrowthBook.brs', 'test-channel/source/GrowthBook.brs'],
     ['tests/cases.json', 'test-channel/source/cases.json'],
+    ['tests/regression-cases.json', 'test-channel/source/regression-cases.json'],
     ['tests/GrowthBookTestRunner.brs', 'test-channel/source/GrowthBookTestRunner.brs'],
     ['tests/TestUtilities.brs', 'test-channel/source/TestUtilities.brs'],
 ];

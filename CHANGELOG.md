@@ -22,7 +22,7 @@ All notable changes to the GrowthBook Roku SDK.
 - **Native test runner** - `run-native.js` now fails when the interpreter stops before printing a result, instead of reporting a pass
 
 ### Changed
-- **Spec tests** - `tests/cases.json` updated from spec 0.7.1 to 0.11.2; contextual bandit feature cases are skipped (not implemented). Both test runners list the spec sections they don't run, with a reason, and fail on a section that is neither run nor listed. The payload reduction methods (`pruneCondition`, `reducePayload`) are not implemented for client SDKs to start with
+- **Spec tests** - `tests/cases.json` updated from spec 0.7.1 to 0.11.3; contextual bandit feature cases are skipped (not implemented). Both test runners list the spec sections they don't run, with a reason, and fail on a section that is neither run nor listed. The payload reduction methods (`pruneCondition`, `reducePayload`) are not implemented for client SDKs to start with
 
 ## [1.4.1] - 2026-02-18
 

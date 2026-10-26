@@ -1452,8 +1452,8 @@ function GrowthBook__isIncludedInRollout(seed as string, hashValue as string, ha
     n = m._gbhash(seed, hashValue, hashVersion)
     if n = invalid then return false
     
-    ' User is included if their hash is less than coverage
-    return n <= coverage
+    ' Half-open, like bucket ranges: a coverage of k/10000 includes exactly k buckets
+    return n < coverage
 end function
 
 ' ===================================================================
@@ -1969,9 +1969,9 @@ function GrowthBook__isRuleIncluded(rule as object, featureKey as string) as boo
         if not inAnyRange return false
     else if rule.coverage <> invalid and rule.variations = invalid
         coverage# = m._toDouble(rule.coverage)
-        if coverage# = 0 return false
         n = m._gbhash(context.seed, context.hashValue, context.hashVersion)
-        if n = invalid or n > coverage# return false
+        ' Half-open, like bucket ranges: a user whose hash equals the coverage is excluded
+        if n = invalid or n >= coverage# return false
     end if
     
     return true

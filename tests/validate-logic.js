@@ -634,7 +634,7 @@ class GrowthBook {
                                             }
                                         } else if (rule.coverage !== undefined) {
                                             // Check coverage only if no range (0 means skip everyone)
-                                            if (rule.coverage === 0 || n > rule.coverage) {
+                                            if (n >= rule.coverage) {
                                                 continue;
                                             }
                                         }
@@ -762,7 +762,7 @@ class GrowthBook {
             if (n === null) return result;
 
             if (coverage < 1.0) {
-                if (n > coverage) return result;
+                if (n >= coverage) return result;
             }
 
             const ranges = rule.ranges || this._getBucketRanges(rule.variations.length, coverage, rule.weights);

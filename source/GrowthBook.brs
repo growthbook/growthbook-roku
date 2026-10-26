@@ -928,31 +928,32 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
         end if
         
         if isOperatorObject
-            ' Operator conditions. An empty object has no operators, so it passes
+            ' Operator conditions. An empty object has no operators, so it passes.
+            ' Operators are looked up by key, so a null argument is still checked
             valueUnknown = false
-            if condition_value["$eq"] <> invalid
+            if condition_value.DoesExist("$eq")
                 if not m._valuesEqual(value, condition_value["$eq"])
                     return false
                 end if
             end if
-            if condition_value["$ne"] <> invalid
+            if condition_value.DoesExist("$ne")
                 if m._valuesEqual(value, condition_value["$ne"])
                     return false
                 end if
             end if
-            if condition_value["$lt"] <> invalid
+            if condition_value.DoesExist("$lt")
                 if not m._compare(value, condition_value["$lt"], "$lt") then return false
             end if
-            if condition_value["$lte"] <> invalid
+            if condition_value.DoesExist("$lte")
                 if not m._compare(value, condition_value["$lte"], "$lte") then return false
             end if
-            if condition_value["$gt"] <> invalid
+            if condition_value.DoesExist("$gt")
                 if not m._compare(value, condition_value["$gt"], "$gt") then return false
             end if
-            if condition_value["$gte"] <> invalid
+            if condition_value.DoesExist("$gte")
                 if not m._compare(value, condition_value["$gte"], "$gte") then return false
             end if
-            if condition_value["$veq"] <> invalid
+            if condition_value.DoesExist("$veq")
                 ' Version equals
                 if not m._isOrderable(value, condition_value["$veq"]) then return false
                 v1 = m._paddedVersionString(value)
@@ -961,7 +962,7 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
                     return false
                 end if
             end if
-            if condition_value["$vne"] <> invalid
+            if condition_value.DoesExist("$vne")
                 ' Version not equals
                 ' A type mismatch is "not equal", so $vne passes
                 if m._isOrderable(value, condition_value["$vne"])
@@ -972,7 +973,7 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
                     end if
                 end if
             end if
-            if condition_value["$vlt"] <> invalid
+            if condition_value.DoesExist("$vlt")
                 ' Version less than
                 if not m._isOrderable(value, condition_value["$vlt"]) then return false
                 v1 = m._paddedVersionString(value)
@@ -981,7 +982,7 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
                     return false
                 end if
             end if
-            if condition_value["$vlte"] <> invalid
+            if condition_value.DoesExist("$vlte")
                 ' Version less than or equal
                 if not m._isOrderable(value, condition_value["$vlte"]) then return false
                 v1 = m._paddedVersionString(value)
@@ -990,7 +991,7 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
                     return false
                 end if
             end if
-            if condition_value["$vgt"] <> invalid
+            if condition_value.DoesExist("$vgt")
                 ' Version greater than
                 if not m._isOrderable(value, condition_value["$vgt"]) then return false
                 v1 = m._paddedVersionString(value)
@@ -999,7 +1000,7 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
                     return false
                 end if
             end if
-            if condition_value["$vgte"] <> invalid
+            if condition_value.DoesExist("$vgte")
                 ' Version greater than or equal
                 if not m._isOrderable(value, condition_value["$vgte"]) then return false
                 v1 = m._paddedVersionString(value)
@@ -1008,23 +1009,23 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
                     return false
                 end if
             end if
-            if condition_value["$in"] <> invalid
+            if condition_value.DoesExist("$in")
                 if type(condition_value["$in"]) <> "roArray" then return false
                 if not m._isIn(value, condition_value["$in"], false) then return false
             end if
-            if condition_value["$ini"] <> invalid
+            if condition_value.DoesExist("$ini")
                 if type(condition_value["$ini"]) <> "roArray" then return false
                 if not m._isIn(value, condition_value["$ini"], true) then return false
             end if
-            if condition_value["$nin"] <> invalid
+            if condition_value.DoesExist("$nin")
                 if type(condition_value["$nin"]) <> "roArray" then return false
                 if m._isIn(value, condition_value["$nin"], false) then return false
             end if
-            if condition_value["$nini"] <> invalid
+            if condition_value.DoesExist("$nini")
                 if type(condition_value["$nini"]) <> "roArray" then return false
                 if m._isIn(value, condition_value["$nini"], true) then return false
             end if
-            if condition_value["$type"] <> invalid
+            if condition_value.DoesExist("$type")
                 ' Check if actual type matches expected type
                 expectedType = condition_value["$type"]
                 actualType = type(value)
@@ -1042,7 +1043,7 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
                     return false
                 end if
             end if
-            if condition_value["$exists"] <> invalid
+            if condition_value.DoesExist("$exists")
                 ' Check if attribute exists
                 shouldExist = GrowthBook_toBoolean(condition_value["$exists"])
                 exists = (value <> invalid)
@@ -1051,7 +1052,7 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
                 end if
             end if
             for each regexOp in ["$regex", "$regexi"]
-                if condition_value[regexOp] <> invalid
+                if condition_value.DoesExist(regexOp)
                     ' Regex matching
                     if value = invalid or (type(value) <> "roString" and type(value) <> "String")
                         return false
@@ -1083,7 +1084,7 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
                     end try
                 end if
             end for
-            if condition_value["$elemMatch"] <> invalid
+            if condition_value.DoesExist("$elemMatch")
                 ' Array element matching
                 if value = invalid or type(value) <> "roArray"
                     return false
@@ -1135,7 +1136,7 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
                     return false
                 end if
             end if
-            if condition_value["$size"] <> invalid
+            if condition_value.DoesExist("$size")
                 if type(value) <> "roArray"
                     return false
                 end if
@@ -1158,7 +1159,7 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
                 end if
             end if
             for each allOp in ["$all", "$alli"]
-                if condition_value[allOp] <> invalid
+                if condition_value.DoesExist(allOp)
                     ' All elements must be present ($alli ignores case)
                     if type(value) <> "roArray" or type(condition_value[allOp]) <> "roArray"
                         return false
@@ -1172,7 +1173,7 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
                 end if
             end for
             for each groupOp in ["$inGroup", "$notInGroup"]
-                if condition_value[groupOp] <> invalid
+                if condition_value.DoesExist(groupOp)
                     groupId = condition_value[groupOp]
                     if type(groupId) <> "roString" and type(groupId) <> "String"
                         return false
@@ -1193,7 +1194,7 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
                     end if
                 end if
             end for
-            if condition_value["$not"] <> invalid
+            if condition_value.DoesExist("$not")
                 ' Negation operator on attribute value
                 tempGB = GrowthBook({ attributes: m.attributes, savedGroups: m.savedGroups, http: {} })
                 tempCondition = {}

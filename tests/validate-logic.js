@@ -345,6 +345,27 @@ class GrowthBook {
         return val === undefined ? null : val;
     }
 
+    // Mirrors BrightScript _getHashValue: only a non-empty string or a finite,
+    // non-zero number identifies a user; anything else is "" (missing)
+    _getHashValue(attr) {
+        const value = this._getAttributeValue(attr);
+        if (typeof value === 'string') return value;
+        if (typeof value === 'number' && value !== 0 && Number.isFinite(value)) return String(value);
+        return '';
+    }
+
+    // Mirrors BrightScript _isFilteredOut: each filter hashes its own attribute
+    // ("id" by default), and a missing hash value filters the user out
+    _isFilteredOut(filters, featureKey) {
+        return filters.some(filter => {
+            const hashValue = this._getHashValue(filter.attribute || 'id');
+            if (hashValue === '') return true;
+            const n = this._gbhash(filter.seed || featureKey, hashValue, filter.hashVersion || 2);
+            if (n === null) return true;
+            return !(filter.ranges || []).some(range => this._inRange(n, range));
+        });
+    }
+
     _getType(value) {
         if (value === null || value === undefined) return 'null';
         if (typeof value === 'string') return 'string';
@@ -578,64 +599,17 @@ class GrowthBook {
                     
                     if (this._evaluateConditions(rule.condition)) {
                         if (rule.force !== undefined) {
-                            // Check if force rule has coverage, range, filters, or hashVersion
-                            if (rule.coverage !== undefined || rule.range || rule.filters || (rule.hashVersion && rule.hashVersion !== 1)) {
-                                const hashAttribute = rule.hashAttribute || 'id';
-                                let hashValue = this._getAttributeValue(hashAttribute);
-                                if (hashValue !== null && hashValue !== '') {
-                                    if (typeof hashValue !== 'string') {
-                                        hashValue = String(hashValue);
-                                    }
-                                    const hashVersion = rule.hashVersion || 1;
-                                    
-                                    // Check filters (all must pass)
-                                    if (rule.filters) {
-                                        let passedFilters = true;
-                                        for (const filter of rule.filters) {
-                                            const filterSeed = filter.seed || key;
-                                            const n = this._gbhash(filterSeed, hashValue, hashVersion);
-                                            if (n === null) {
-                                                passedFilters = false;
-                                                break;
-                                            }
-                                            let inAnyRange = false;
-                                            for (const range of filter.ranges) {
-                                                if (this._inRange(n, range)) {
-                                                    inAnyRange = true;
-                                                    break;
-                                                }
-                                            }
-                                            if (!inAnyRange) {
-                                                passedFilters = false;
-                                                break;
-                                            }
-                                        }
-                                        if (!passedFilters) {
-                                            continue;
-                                        }
-                                    } else {
-                                        const seed = rule.seed || rule.key || key;
-                                        const n = this._gbhash(seed, hashValue, hashVersion);
-                                        if (n === null) {
-                                            continue;
-                                        }
-                                        
-                                        // Check range first (takes precedence over coverage)
-                                        if (rule.range) {
-                                            if (!this._inRange(n, rule.range)) {
-                                                continue;
-                                            }
-                                        } else if (rule.coverage !== undefined) {
-                                            // Check coverage only if no range (0 means skip everyone)
-                                            if (n >= rule.coverage) {
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    // Missing hashAttribute, skip rule
-                                    continue;
-                                }
+                            // Filters, then the rollout (range or coverage). Mirrors
+                            // BrightScript _isForceRuleIncluded: only a rollout needs the
+                            // rule's hash attribute, and namespaces only apply to experiments
+                            if (rule.filters && this._isFilteredOut(rule.filters, key)) continue;
+                            if (rule.range || rule.coverage !== undefined) {
+                                if (!rule.range && rule.coverage === 0) continue;
+                                const hashValue = this._getHashValue(rule.hashAttribute || 'id');
+                                if (hashValue === '') continue;
+                                const n = this._gbhash(rule.seed || key, hashValue, rule.hashVersion || 1);
+                                if (n === null) continue;
+                                if (rule.range ? !this._inRange(n, rule.range) : n >= rule.coverage) continue;
                             }
                             result.value = rule.force;
                             result.on = !!result.value;
@@ -705,23 +679,20 @@ class GrowthBook {
         // Get hash context
         const hashAttribute = rule.hashAttribute || 'id';
         let resolvedHashAttr = hashAttribute;
-        let hashValue = this._getAttributeValue(hashAttribute);
+        let hashValue = this._getHashValue(hashAttribute);
         
-        // Fallback attribute support
-        if ((hashValue === null || hashValue === '') && rule.fallbackAttribute) {
-            hashValue = this._getAttributeValue(rule.fallbackAttribute);
-            if (hashValue !== null && hashValue !== '') {
+        // Fallback attribute support, only with sticky bucketing enabled
+        const usesStickyBucketing = this.stickyBucketService && !rule.disableStickyBucketing;
+        if (hashValue === '' && usesStickyBucketing && rule.fallbackAttribute) {
+            hashValue = this._getHashValue(rule.fallbackAttribute);
+            if (hashValue !== '') {
                 resolvedHashAttr = rule.fallbackAttribute;
             }
         }
         
         // Skip if required hashAttribute is missing
-        if (hashValue === null || hashValue === '') {
+        if (hashValue === '') {
             return result;
-        }
-        
-        if (typeof hashValue !== 'string') {
-            hashValue = String(hashValue);
         }
 
         const seed = rule.seed || rule.key || featureKey;
@@ -804,30 +775,24 @@ class GrowthBook {
 
         // 1. Check fallbackAttribute first (lower priority)
         if (rule.fallbackAttribute) {
-            let fallbackVal = this._getAttributeValue(rule.fallbackAttribute);
-            if (fallbackVal !== null && fallbackVal !== undefined) {
-                if (typeof fallbackVal !== 'string') fallbackVal = String(fallbackVal);
-                if (fallbackVal !== '') {
-                    const fallbackKey = `${rule.fallbackAttribute}||${fallbackVal}`;
-                    const fallbackDoc = this._stickyBucketAssignmentDocs[fallbackKey];
-                    if (fallbackDoc && fallbackDoc.assignments) {
-                        Object.assign(mergedAssignments, fallbackDoc.assignments);
-                    }
+            const fallbackVal = this._getHashValue(rule.fallbackAttribute);
+            if (fallbackVal !== '') {
+                const fallbackKey = `${rule.fallbackAttribute}||${fallbackVal}`;
+                const fallbackDoc = this._stickyBucketAssignmentDocs[fallbackKey];
+                if (fallbackDoc && fallbackDoc.assignments) {
+                    Object.assign(mergedAssignments, fallbackDoc.assignments);
                 }
             }
         }
 
         // 2. Check hashAttribute (higher priority)
         const hashAttr = rule.hashAttribute || 'id';
-        let hashVal = this._getAttributeValue(hashAttr);
-        if (hashVal !== null && hashVal !== undefined) {
-            if (typeof hashVal !== 'string') hashVal = String(hashVal);
-            if (hashVal !== '') {
-                const hashKey = `${hashAttr}||${hashVal}`;
-                const hashDoc = this._stickyBucketAssignmentDocs[hashKey];
-                if (hashDoc && hashDoc.assignments) {
-                    Object.assign(mergedAssignments, hashDoc.assignments);
-                }
+        const hashVal = this._getHashValue(hashAttr);
+        if (hashVal !== '') {
+            const hashKey = `${hashAttr}||${hashVal}`;
+            const hashDoc = this._stickyBucketAssignmentDocs[hashKey];
+            if (hashDoc && hashDoc.assignments) {
+                Object.assign(mergedAssignments, hashDoc.assignments);
             }
         }
 
@@ -995,7 +960,8 @@ function runTests(category, tests) {
                 result = gb.evalFeature(featureKey);
                 
                 // Compare key fields
-                const match = result.value === expected.value &&
+                // Values can be arrays or objects, so compare them deeply
+                const match = gb._deepEqual(result.value, expected.value) &&
                              result.on === expected.on &&
                              result.off === expected.off &&
                              result.source === expected.source;
@@ -1160,6 +1126,7 @@ const excludedSections = {
     reducePayload: payloadReduction,
     contextualBandit: 'Contextual bandits are not implemented',
     savedGroupReferencesV2: '$savedGroup references (saved groups v2) are not implemented',
+    savedGroupReferencesRemote: 'Remote saved groups are not implemented',
     getQueryStringOverride: 'Query string overrides are not implemented',
     urlRedirect: 'URL redirects are a browser feature',
     inNamespace: 'No standalone runner yet; namespaces are covered by feature and run cases',

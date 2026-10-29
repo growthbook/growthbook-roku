@@ -116,6 +116,7 @@ function GrowthBookTestRunner_excludedSections() as object
         reducePayload: "The payload reduction methods (pruneCondition, reducePayload) are not implemented for client SDKs to start with",
         contextualBandit: "Contextual bandits are not implemented",
         savedGroupReferencesV2: "$savedGroup references (saved groups v2) are not implemented",
+        savedGroupReferencesRemote: "Remote saved groups are not implemented",
         getQueryStringOverride: "Query string overrides are not implemented",
         urlRedirect: "URL redirects are a browser feature",
         inNamespace: "No standalone runner yet; namespaces are covered by feature and run cases",
@@ -161,7 +162,8 @@ end function
 
 ' ================================================================
 ' Run this SDK's own regression cases (tests/regression-cases.json),
-' which use the same format as the matching cases.json sections. The
+' which use the same format as the matching cases.json sections
+' (evalCondition, and optionally run, feature and stickyBucket). The
 ' JS validator doesn't run them: they check the BrightScript code itself
 ' ================================================================
 function GrowthBookTestRunner_runRegressionCases(filePath as string) as object
@@ -173,6 +175,11 @@ function GrowthBookTestRunner_runRegressionCases(filePath as string) as object
         m.totalFailed = m.totalFailed + 1
         return { passed: 0, failed: 1, skipped: 0 }
     end if
+    for each category in ["run", "feature", "stickyBucket"]
+        if type(regression[category]) = "roArray"
+            m._runTests("regression: " + category, category, regression[category])
+        end if
+    end for
     return m._runTests("regression: evalCondition", "evalCondition", regression.evalCondition)
 end function
 

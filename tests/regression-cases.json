@@ -1,5 +1,5 @@
 {
-  "description": "Cases the shared cases.json doesn't cover, checked against the JS SDK. Same format as its evalCondition section",
+  "description": "Cases the shared cases.json doesn't cover, checked against the JS SDK. Same format as its evalCondition, run, feature and stickyBucket sections",
   "evalCondition": [
     ["$eq object",{"x":{"$eq":{"a":1}}},{"x":{"a":1}},false],
     ["$eq array",{"x":{"$eq":[1]}},{"x":[1]},false],
@@ -57,6 +57,33 @@
     ["$alli with $elemMatch $nor on nested arrays",{"x":{"$alli":[{"$elemMatch":{"$nor":[{"0":1}]}}]}},{"x":[[[1]]]},false],
     ["$alli with $elemMatch $or on nested arrays",{"x":{"$alli":[{"$elemMatch":{"$or":[{"0":1}]}}]}},{"x":[[[1]]]},true],
     ["attribute path reads an array index",{"x.1":2},{"x":[1,2]},true],
-    ["attribute path reads an array length",{"x.length":2},{"x":[1,2]},true]
+    ["attribute path reads an array length",{"x.length":2},{"x":[1,2]},true],
+    ["$type number on a LongInteger",{"x":{"$type":"number"}},{"x":2147483648},true],
+    ["$type number on a negative LongInteger",{"x":{"$type":"number"}},{"x":-2147483649},true]
+  ],
+  "run": [
+    ["id 1.5 hashes as \"1.5\"",{"attributes":{"id":1.5}},{"key":"my-test","variations":[0,1],"hashVersion":2},0,true,true],
+    ["forced variation with a boolean id",{"attributes":{"id":true},"forcedVariations":{"my-test":1}},{"key":"my-test","variations":[0,1]},1,true,false],
+    ["fallback attribute is ignored without sticky bucketing",{"attributes":{"id":true,"deviceId":"d1"}},{"key":"my-test","variations":[0,1],"fallbackAttribute":"deviceId"},0,false,false]
+  ],
+  "feature": [
+    ["a filter on a boolean attribute filters the user out",{"attributes":{"id":"1","company":true},"features":{"f":{"defaultValue":"d","rules":[{"force":"on","filters":[{"seed":"s","attribute":"company","ranges":[[0,1]]}]}]}}},"f",{"value":"d","on":true,"off":false,"source":"defaultValue","ruleId":""}],
+    ["an experiment with a namespace and a boolean id excludes the user",{"attributes":{"id":true},"features":{"f":{"defaultValue":"d","rules":[{"key":"e","variations":["a","b"],"namespace":["ns",0,1]}]}}},"f",{"value":"d","on":true,"off":false,"source":"defaultValue","ruleId":""}],
+    ["a rollout on an array id excludes the user",{"attributes":{"id":["1"]},"features":{"f":{"defaultValue":"d","rules":[{"force":"on","coverage":1}]}}},"f",{"value":"d","on":true,"off":false,"source":"defaultValue","ruleId":""}],
+    ["a force rule with filters doesn't need its hash attribute",{"attributes":{"company":"acme"},"features":{"f":{"defaultValue":"d","rules":[{"force":"on","filters":[{"seed":"s","attribute":"company","ranges":[[0,1]]}]}]}}},"f",{"value":"on","on":true,"off":false,"source":"force","ruleId":""}],
+    ["a force rule with filters ignores a boolean hash attribute",{"attributes":{"id":true,"company":"acme"},"features":{"f":{"defaultValue":"d","rules":[{"force":"on","filters":[{"seed":"s","attribute":"company","ranges":[[0,1]]}]}]}}},"f",{"value":"on","on":true,"off":false,"source":"force","ruleId":""}],
+    ["a filter without an attribute hashes id, not the rule's hash attribute (in)",{"attributes":{"id":"u2","company":"c1"},"features":{"f":{"defaultValue":"d","rules":[{"force":"on","hashAttribute":"company","filters":[{"seed":"s","ranges":[[0,0.5]]}]}]}}},"f",{"value":"on","on":true,"off":false,"source":"force","ruleId":""}],
+    ["a filter without an attribute hashes id, not the rule's hash attribute (out)",{"attributes":{"id":"u1","company":"acme"},"features":{"f":{"defaultValue":"d","rules":[{"force":"on","hashAttribute":"company","filters":[{"seed":"s","ranges":[[0,0.5]]}]}]}}},"f",{"value":"d","on":true,"off":false,"source":"defaultValue","ruleId":""}],
+    ["a force rule ignores a namespace that excludes the user",{"attributes":{"id":"u1"},"features":{"f":{"defaultValue":"d","rules":[{"force":"on","namespace":["ns",0,0.001]}]}}},"f",{"value":"on","on":true,"off":false,"source":"force","ruleId":""}],
+    ["a force rule ignores a namespace without a hash attribute",{"attributes":{},"features":{"f":{"defaultValue":"d","rules":[{"force":"on","namespace":["ns",0,1]}]}}},"f",{"value":"on","on":true,"off":false,"source":"force","ruleId":""}]
+  ],
+  "stickyBucket": [
+    ["id true is missing, so the fallback attribute is used",{"attributes":{"id":true,"deviceId":"d1"},"features":{"f":{"defaultValue":0,"rules":[{"key":"e","variations":[0,1],"fallbackAttribute":"deviceId"}]}}},[],"f",{"value":1,"variationId":1,"stickyBucketUsed":false},{"deviceId||d1":{"attributeName":"deviceId","attributeValue":"d1","assignments":{"e__0":"1"}}}],
+    ["id false is missing, so the fallback attribute is used",{"attributes":{"id":false,"deviceId":"d1"},"features":{"f":{"defaultValue":0,"rules":[{"key":"e","variations":[0,1],"fallbackAttribute":"deviceId"}]}}},[],"f",{"value":1,"variationId":1,"stickyBucketUsed":false},{"deviceId||d1":{"attributeName":"deviceId","attributeValue":"d1","assignments":{"e__0":"1"}}}],
+    ["id 0 is missing, so the fallback attribute is used",{"attributes":{"id":0,"deviceId":"d1"},"features":{"f":{"defaultValue":0,"rules":[{"key":"e","variations":[0,1],"fallbackAttribute":"deviceId"}]}}},[],"f",{"value":1,"variationId":1,"stickyBucketUsed":false},{"deviceId||d1":{"attributeName":"deviceId","attributeValue":"d1","assignments":{"e__0":"1"}}}],
+    ["id [] is missing, so the fallback attribute is used",{"attributes":{"id":[],"deviceId":"d1"},"features":{"f":{"defaultValue":0,"rules":[{"key":"e","variations":[0,1],"fallbackAttribute":"deviceId"}]}}},[],"f",{"value":1,"variationId":1,"stickyBucketUsed":false},{"deviceId||d1":{"attributeName":"deviceId","attributeValue":"d1","assignments":{"e__0":"1"}}}],
+    ["id {} is missing, so the fallback attribute is used",{"attributes":{"id":{},"deviceId":"d1"},"features":{"f":{"defaultValue":0,"rules":[{"key":"e","variations":[0,1],"fallbackAttribute":"deviceId"}]}}},[],"f",{"value":1,"variationId":1,"stickyBucketUsed":false},{"deviceId||d1":{"attributeName":"deviceId","attributeValue":"d1","assignments":{"e__0":"1"}}}],
+    ["id [\"1\"] is missing, so the fallback attribute is used",{"attributes":{"id":["1"],"deviceId":"d1"},"features":{"f":{"defaultValue":0,"rules":[{"key":"e","variations":[0,1],"fallbackAttribute":"deviceId"}]}}},[],"f",{"value":1,"variationId":1,"stickyBucketUsed":false},{"deviceId||d1":{"attributeName":"deviceId","attributeValue":"d1","assignments":{"e__0":"1"}}}],
+    ["no fallback attribute when sticky bucketing is disabled for the rule",{"attributes":{"id":true,"deviceId":"d1"},"features":{"f":{"defaultValue":0,"rules":[{"key":"e","variations":[0,1],"fallbackAttribute":"deviceId","disableStickyBucketing":true}]}}},[],"f",null,{}]
   ]
 }

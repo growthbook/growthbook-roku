@@ -52,6 +52,8 @@ function GrowthBook(config as object) as object
         _getAttributeValue: GrowthBook__getAttributeValue,
         _fnv1a32: GrowthBook__fnv1a32,
         _longToStr: GrowthBook__longToStr,
+        _hashValueString: GrowthBook__hashValueString,
+        _getHashValue: GrowthBook__getHashValue,
         _gbhash: GrowthBook__gbhash,
         _paddedVersionString: GrowthBook__paddedVersionString,
         _isIncludedInRollout: GrowthBook__isIncludedInRollout,
@@ -72,6 +74,8 @@ function GrowthBook(config as object) as object
         _inNamespace: GrowthBook__inNamespace,
         _getHashContext: GrowthBook__getHashContext,
         _isRuleIncluded: GrowthBook__isRuleIncluded,
+        _isForceRuleIncluded: GrowthBook__isForceRuleIncluded,
+        _isFilteredOut: GrowthBook__isFilteredOut,
         _log: GrowthBook__log,
         _hashAttribute: GrowthBook__hashAttribute,
         _decrypt: GrowthBook__decrypt,
@@ -488,23 +492,10 @@ function GrowthBook_evalFeature(key as string) as object
                         ' 2. Rule Condition
                         if not m._evaluateConditions(rule.condition) then exit while
                         
-                        ' Namespace check
-                        if rule.namespace <> invalid
-                            hashAttribute = "id"
-                            if rule.hashAttribute <> invalid and rule.hashAttribute <> "" then hashAttribute = rule.hashAttribute
-                            hashValue = m._getAttributeValue(hashAttribute)
-                            if hashValue = invalid then exit while
-                            if type(hashValue) <> "roString" and type(hashValue) <> "String"
-                                hashValue = Str(hashValue).Trim()
-                            end if
-                            if hashValue = "" then exit while
-                            if not m._inNamespace(hashValue, rule.namespace) then exit while
-                        end if
-                        
                         ' 3. Force Rule
                         if rule.DoesExist("force")
-                            ' Handle coverage/range/filters/hashVersion for force rules
-                            if not m._isRuleIncluded(rule, key) then exit while
+                            ' Filters and rollout (range/coverage) for force rules
+                            if not m._isForceRuleIncluded(rule, key) then exit while
                             
                             result.value = rule.force
                             result.on = GrowthBook_toBoolean(rule.force)
@@ -1033,18 +1024,8 @@ function GrowthBook__evalConditionResult(condition as object) as dynamic
             if condition_value.DoesExist("$type")
                 ' Check if actual type matches expected type
                 expectedType = condition_value["$type"]
-                actualType = type(value)
-                
-                ' Map BrightScript types to JSON types
-                jsonType = ""
-                if actualType = "roString" or actualType = "String" then jsonType = "string"
-                if actualType = "roInteger" or actualType = "roFloat" or actualType = "Integer" or actualType = "Float" then jsonType = "number"
-                if actualType = "roBoolean" or actualType = "Boolean" then jsonType = "boolean"
-                if actualType = "roArray" then jsonType = "array"
-                if actualType = "roAssociativeArray" then jsonType = "object"
-                if actualType = "Invalid" or value = invalid then jsonType = "null"
-                
-                if jsonType <> expectedType
+                ' JSON type of the value; numbers include LongInteger and Double
+                if m._jsonType(value) <> expectedType
                     return false
                 end if
             end if
@@ -1319,6 +1300,38 @@ function GrowthBook__longToStr(val as longinteger) as string
         remaining& = remaining& \ 10
     end while
     return result
+end function
+
+' ===================================================================
+' Hash value of an attribute, or "" when it can't identify a user. Like the
+' JS SDK, only a non-empty string or a non-zero number is used; 0, booleans,
+' null, arrays and objects count as missing
+' ===================================================================
+function GrowthBook__getHashValue(attr as string) as string
+    return m._hashValueString(m._getAttributeValue(attr))
+end function
+
+' ===================================================================
+' A hashable attribute value as a string, formatted like JS String(): an
+' integral number has no decimal part (1.0 -> "1"). Returns "" for anything
+' that isn't a non-empty string or a non-zero number
+' ===================================================================
+function GrowthBook__hashValueString(value as dynamic) as string
+    t = type(value)
+    if t = "roString" or t = "String" then return value
+    if m._jsonType(value) <> "number" then return ""
+    if value = 0 then return ""
+    if t = "roInteger" or t = "Integer" or t = "roLongInteger" or t = "LongInteger"
+        n& = value
+    else
+        ' Integral floats within the exact integer range print without ".0"
+        d# = value
+        if d# >= 1e15 or d# <= -1e15 then return Str(value).Trim()
+        n& = d#
+        if n& <> d# then return Str(value).Trim()
+    end if
+    if n& < 0 then return "-" + m._longToStr(-n&)
+    return m._longToStr(n&)
 end function
 
 ' ===================================================================
@@ -1749,15 +1762,7 @@ sub GrowthBook__trackExperiment(experiment as object, result as object)
     ' Build unique tracking key to prevent duplicate tracking
     hashAttribute = "id"
     if experiment.hashAttribute <> invalid then hashAttribute = experiment.hashAttribute
-    hashValue = ""
-    if m.attributes[hashAttribute] <> invalid
-        attrValue = m.attributes[hashAttribute]
-        if type(attrValue) = "roString" or type(attrValue) = "String"
-            hashValue = attrValue
-        else
-            hashValue = Str(attrValue).Trim()
-        end if
-    end if
+    hashValue = m._getHashValue(hashAttribute)
     experimentKey = ""
     if experiment.key <> invalid then experimentKey = experiment.key
     variationId = ""
@@ -1885,29 +1890,16 @@ function GrowthBook__getHashContext(rule as object, featureKey as string) as obj
     end if
     
     ' 2. Hash Value - try primary attribute first
-    val = m._getAttributeValue(context.hashAttribute)
-    if val <> invalid
-        if type(val) = "roString" or type(val) = "String"
-            context.hashValue = val
-        else
-            context.hashValue = Str(val).Trim()
-        end if
-    end if
+    context.hashValue = m._getHashValue(context.hashAttribute)
     
-    ' 2b. FALLBACK - if primary value empty, try fallbackAttribute
-    ' This is used for sticky bucketing when the primary hash attribute is not available
-    if context.hashValue = "" and rule.fallbackAttribute <> invalid and rule.fallbackAttribute <> ""
-        val = m._getAttributeValue(rule.fallbackAttribute)
-        if val <> invalid
-            if type(val) = "roString" or type(val) = "String"
-                context.hashValue = val
-            else
-                context.hashValue = Str(val).Trim()
-            end if
-            ' Only update hashAttribute if we successfully got a fallback value
-            if context.hashValue <> ""
-                context.hashAttribute = rule.fallbackAttribute
-            end if
+    ' 2b. FALLBACK - if primary value is missing, try fallbackAttribute. Like
+    ' the JS SDK, only with sticky bucketing enabled for this rule
+    usesStickyBucketing = m.stickyBucketService <> invalid and rule.disableStickyBucketing <> true
+    if context.hashValue = "" and usesStickyBucketing and rule.fallbackAttribute <> invalid and rule.fallbackAttribute <> ""
+        context.hashValue = m._getHashValue(rule.fallbackAttribute)
+        ' Only update hashAttribute if we successfully got a fallback value
+        if context.hashValue <> ""
+            context.hashAttribute = rule.fallbackAttribute
         end if
     end if
     
@@ -1943,42 +1935,7 @@ function GrowthBook__isRuleIncluded(rule as object, featureKey as string) as boo
     
     ' 1. Filters
     if rule.filters <> invalid
-        for each filter in rule.filters
-            filterSeed = featureKey
-            if filter.seed <> invalid then filterSeed = filter.seed
-            version = 2
-            if filter.hashVersion <> invalid then version = filter.hashVersion
-            
-            ' Determine which attribute to use for this filter
-            filterAttr = "id"
-            if filter.attribute <> invalid and filter.attribute <> ""
-                filterAttr = filter.attribute
-            else if rule.hashAttribute <> invalid and rule.hashAttribute <> ""
-                filterAttr = rule.hashAttribute
-            end if
-            
-            filterVal = m._getAttributeValue(filterAttr)
-            if filterVal = invalid then return false
-            filterValStr = ""
-            if type(filterVal) = "roString" or type(filterVal) = "String"
-                filterValStr = filterVal
-            else
-                filterValStr = Str(filterVal).Trim()
-            end if
-            if filterValStr = "" return false
-            
-            n = m._gbhash(filterSeed, filterValStr, version)
-            if n = invalid return false
-            
-            inAnyRange = false
-            for each rng in filter.ranges
-                if m._inRange(n, rng)
-                    inAnyRange = true
-                    exit for
-                end if
-            end for
-            if not inAnyRange return false
-        end for
+        if m._isFilteredOut(rule.filters, featureKey) return false
         
         ' If filters matched, return true and IGNORE standard rollout/namespace
         return true
@@ -2014,6 +1971,67 @@ function GrowthBook__isRuleIncluded(rule as object, featureKey as string) as boo
 end function
 
 ' ===================================================================
+' Check if a force rule includes the user, like the JS SDK: its filters,
+' then its rollout (range or coverage). Only a rollout needs the rule's hash
+' attribute, and namespaces only apply to experiments
+' ===================================================================
+function GrowthBook__isForceRuleIncluded(rule as object, featureKey as string) as boolean
+    if rule.filters <> invalid and m._isFilteredOut(rule.filters, featureKey) then return false
+    
+    if rule.range = invalid and rule.coverage = invalid then return true
+    coverage# = 0
+    if rule.coverage <> invalid then coverage# = m._toDouble(rule.coverage)
+    if rule.range = invalid and coverage# = 0 then return false
+    
+    context = m._getHashContext(rule, featureKey)
+    if not context.success then return false
+    
+    ' The rollout seed is the rule's seed or the feature key
+    seed = featureKey
+    if rule.seed <> invalid and rule.seed <> "" then seed = rule.seed
+    n = m._gbhash(seed, context.hashValue, context.hashVersion)
+    if n = invalid then return false
+    
+    if rule.range <> invalid then return m._inRange(n, rule.range)
+    ' Half-open, like bucket ranges: a user whose hash equals the coverage is excluded
+    return n < coverage#
+end function
+
+' ===================================================================
+' True when any filter excludes the user. A filter hashes its own attribute
+' ("id" by default), and a missing hash value filters the user out
+' ===================================================================
+function GrowthBook__isFilteredOut(filters as object, featureKey as string) as boolean
+    for each filter in filters
+        filterSeed = featureKey
+        if filter.seed <> invalid then filterSeed = filter.seed
+        version = 2
+        if filter.hashVersion <> invalid then version = filter.hashVersion
+        
+        filterAttr = "id"
+        if filter.attribute <> invalid and filter.attribute <> "" then filterAttr = filter.attribute
+        
+        filterValStr = m._getHashValue(filterAttr)
+        if filterValStr = "" then return true
+        
+        n = m._gbhash(filterSeed, filterValStr, version)
+        if n = invalid then return true
+        
+        inAnyRange = false
+        if filter.ranges <> invalid
+            for each rng in filter.ranges
+                if m._inRange(n, rng)
+                    inAnyRange = true
+                    exit for
+                end if
+            end for
+        end if
+        if not inAnyRange then return true
+    end for
+    return false
+end function
+
+' ===================================================================
 ' Utility Functions
 ' ===================================================================
 
@@ -2030,12 +2048,14 @@ function GrowthBook_toBoolean(value as dynamic) as boolean
         return value <> ""
     end if
     
-    if type(value) = "roInteger" or type(value) = "Integer" or type(value) = "LongInteger"
+    t = type(value)
+    if t = "roInteger" or t = "Integer" or t = "roLongInteger" or t = "LongInteger"
         return value <> 0
     end if
     
-    if type(value) = "roFloat" or type(value) = "Float" or type(value) = "Double"
-        return value <> 0.0
+    if t = "roFloat" or t = "Float" or t = "roDouble" or t = "Double"
+        ' NaN is falsy, like 0
+        return value <> 0.0 and value = value
     end if
     
     ' Other objects (AA, Array) are truthy
@@ -2257,16 +2277,12 @@ function GrowthBook__getStickyBucketVariation(rule as object, featureKey as stri
     ' 1. Check Primary (hashAttribute) first - HIGHER priority
     hashAttr = "id"
     if rule.hashAttribute <> invalid and rule.hashAttribute <> "" then hashAttr = rule.hashAttribute
-    attrVal = m._getAttributeValue(hashAttr)
-    if attrVal <> invalid
-        valStr = ""
-        if type(attrVal) = "roString" or type(attrVal) = "String" then valStr = attrVal else valStr = Str(attrVal).Trim()
-        if valStr <> ""
-            doc = m._stickyBucketAssignmentDocs[hashAttr + "||" + valStr]
-            if doc <> invalid and doc.assignments <> invalid
-                assignments = doc.assignments
-                source = "primary"
-            end if
+    valStr = m._getHashValue(hashAttr)
+    if valStr <> ""
+        doc = m._stickyBucketAssignmentDocs[hashAttr + "||" + valStr]
+        if doc <> invalid and doc.assignments <> invalid
+            assignments = doc.assignments
+            source = "primary"
         end if
     end if
     
@@ -2275,20 +2291,16 @@ function GrowthBook__getStickyBucketVariation(rule as object, featureKey as stri
     foundInPrimary = assignments.DoesExist(currentKey)
     
     if rule.fallbackAttribute <> invalid and rule.fallbackAttribute <> ""
-        attrVal = m._getAttributeValue(rule.fallbackAttribute)
-        if attrVal <> invalid
-            valStr = ""
-            if type(attrVal) = "roString" or type(attrVal) = "String" then valStr = attrVal else valStr = Str(attrVal).Trim()
-            if valStr <> ""
-                doc = m._stickyBucketAssignmentDocs[rule.fallbackAttribute + "||" + valStr]
-                if doc <> invalid and doc.assignments <> invalid
-                    ' Merge every fallback assignment, preferring primary for the same key,
-                    ' so an old bucket version stored under the fallback still blocks
-                    for each k in doc.assignments
-                        if not assignments.DoesExist(k) then assignments[k] = doc.assignments[k]
-                    end for
-                    if not foundInPrimary and doc.assignments.DoesExist(currentKey) then source = "fallback"
-                end if
+        valStr = m._getHashValue(rule.fallbackAttribute)
+        if valStr <> ""
+            doc = m._stickyBucketAssignmentDocs[rule.fallbackAttribute + "||" + valStr]
+            if doc <> invalid and doc.assignments <> invalid
+                ' Merge every fallback assignment, preferring primary for the same key,
+                ' so an old bucket version stored under the fallback still blocks
+                for each k in doc.assignments
+                    if not assignments.DoesExist(k) then assignments[k] = doc.assignments[k]
+                end for
+                if not foundInPrimary and doc.assignments.DoesExist(currentKey) then source = "fallback"
             end if
         end if
     end if

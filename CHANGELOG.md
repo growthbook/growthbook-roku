@@ -4,6 +4,8 @@ All notable changes to the GrowthBook Roku SDK.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-30
+
 ### Breaking
 - **Strict types in condition evaluation** (spec 0.10.0, growthbook/growthbook#7379) - an attribute whose type differs from the condition value now fails the operator and matches its negation. No coercion: `"10"` no longer equals `10`, a string number no longer satisfies `$gt`/`$lt` against a number (or vice versa), a missing attribute fails comparison operators, booleans are not ordered, and version operators (`$veq`, `$vgt`, ...) need both sides to be strings or both numbers. `$exists` and `$type` are unchanged.
 - **Unsupported operators fail** (spec 0.11.0, growthbook/growthbook#7346) - a condition that depends on an operator or saved group type this SDK doesn't support now fails, including under `$not` and `$nor`, where it used to pass

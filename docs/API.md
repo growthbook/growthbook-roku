@@ -1,6 +1,6 @@
 # GrowthBook Roku SDK - API Reference
 
-Complete API documentation for the GrowthBook Roku SDK v1.4.1.
+Complete API documentation for the GrowthBook Roku SDK v2.0.0.
 
 ## Table of Contents
 

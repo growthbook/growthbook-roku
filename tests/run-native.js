@@ -77,13 +77,9 @@ try {
         process.exit(0);
     }
 
-    // If brs crashed (no output at all)
-    if (result.status !== 0 && !stdout.includes('TEST SUMMARY')) {
-        console.error('❌ Native interpreter exited with code ' + result.status);
-        process.exit(1);
-    }
-
-    console.log('✅ Native Spec Tests Passed!');
+    // No pass/fail marker means brs stopped early, e.g. on a runtime error
+    console.error('❌ Native interpreter stopped before finishing (exit code ' + result.status + ')');
+    process.exit(1);
 
 } catch (err) {
     console.error('Error running native tests:', err);

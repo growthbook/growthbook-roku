@@ -13,6 +13,7 @@ function GrowthBookTestRunner() as object
     instance = {
         ' State
         cases: invalid,
+        casesDir: "",
         results: {},
         totalPassed: 0,
         totalFailed: 0,
@@ -22,12 +23,14 @@ function GrowthBookTestRunner() as object
         loadCases: GrowthBookTestRunner_loadCases,
         runAllTests: GrowthBookTestRunner_runAllTests,
         runCategory: GrowthBookTestRunner_runCategory,
+        runRegressionCases: GrowthBookTestRunner_runRegressionCases,
         getResults: GrowthBookTestRunner_getResults,
         getResults: GrowthBookTestRunner_getResults,
         printSummary: GrowthBookTestRunner_printSummary,
         runEncryptedInitTest: GrowthBookTestRunner_runEncryptedInitTest,
         
         ' Private Methods (test runners)
+        _runTests: GrowthBookTestRunner_runTests,
         _runSingleTest: GrowthBookTestRunner_runSingleTest,
         _runEvalConditionTest: GrowthBookTestRunner_runEvalConditionTest,
         _runHashTest: GrowthBookTestRunner_runHashTest,
@@ -36,7 +39,8 @@ function GrowthBookTestRunner() as object
         _runFeatureTest: GrowthBookTestRunner_runFeatureTest,
         _runExperimentTest: GrowthBookTestRunner_runExperimentTest,
         _runDecryptTest: GrowthBookTestRunner_runDecryptTest,
-        _runStickyBucketTest: GrowthBookTestRunner_runStickyBucketTest
+        _runStickyBucketTest: GrowthBookTestRunner_runStickyBucketTest,
+        _checkSpecSections: GrowthBookTestRunner_checkSpecSections
     }
     
     return instance
@@ -47,6 +51,14 @@ end function
 ' ================================================================
 function GrowthBookTestRunner_loadCases(filePath as string) as boolean
     m.cases = invalid
+    ' regression-cases.json sits next to cases.json
+    m.casesDir = ""
+    for i = Len(filePath) to 1 step -1
+        if Mid(filePath, i, 1) = "/"
+            m.casesDir = Left(filePath, i)
+            exit for
+        end if
+    end for
     
     ' Read file
     jsonString = ReadAsciiFile(filePath)
@@ -85,11 +97,56 @@ function GrowthBookTestRunner_runAllTests() as object
         end if
     end for
     
+    m._checkSpecSections(categories)
+    
     m.runEncryptedInitTest()
+
+    m.runRegressionCases(m.casesDir + "regression-cases.json")
 
     m.printSummary()
     return m.results
 end function
+
+' ================================================================
+' Spec sections this runner doesn't run, and why
+' ================================================================
+function GrowthBookTestRunner_excludedSections() as object
+    return {
+        pruneCondition: "The payload reduction methods (pruneCondition, reducePayload) are not implemented for client SDKs to start with",
+        reducePayload: "The payload reduction methods (pruneCondition, reducePayload) are not implemented for client SDKs to start with",
+        contextualBandit: "Contextual bandits are not implemented",
+        savedGroupReferencesV2: "$savedGroup references (saved groups v2) are not implemented",
+        savedGroupReferencesRemote: "Remote saved groups are not implemented",
+        getQueryStringOverride: "Query string overrides are not implemented",
+        urlRedirect: "URL redirects are a browser feature",
+        inNamespace: "No standalone runner yet; namespaces are covered by feature and run cases",
+        getEqualWeights: "No standalone runner yet; equal weights are covered by getBucketRange cases"
+    }
+end function
+
+' ================================================================
+' Fail when cases.json has a section this runner neither runs nor excludes,
+' so a new spec section can't be skipped silently
+' ================================================================
+sub GrowthBookTestRunner_checkSpecSections(categories as object)
+    excluded = GrowthBookTestRunner_excludedSections()
+    ran = {}
+    for each category in categories
+        ran[category] = true
+    end for
+    print ""
+    print "Spec sections not run:"
+    for each section in m.cases
+        if section <> "specVersion" and not ran.DoesExist(section)
+            if excluded.DoesExist(section)
+                print "  - " + section + ": " + excluded[section]
+            else
+                print "  - " + section + ": ERROR neither run nor excluded"
+                m.totalFailed = m.totalFailed + 1
+            end if
+        end if
+    end for
+end sub
 
 ' ================================================================
 ' Run Single Category
@@ -100,14 +157,43 @@ function GrowthBookTestRunner_runCategory(category as string) as object
         return { passed: 0, failed: 0, skipped: 0 }
     end if
     
-    tests = m.cases[category]
+    return m._runTests(category, category, m.cases[category])
+end function
+
+' ================================================================
+' Run this SDK's own regression cases (tests/regression-cases.json),
+' which use the same format as the matching cases.json sections
+' (evalCondition, and optionally run, feature and stickyBucket). The
+' JS validator doesn't run them: they check the BrightScript code itself
+' ================================================================
+function GrowthBookTestRunner_runRegressionCases(filePath as string) as object
+    jsonString = ReadAsciiFile(filePath)
+    regression = invalid
+    if jsonString <> "" then regression = ParseJson(jsonString)
+    if regression = invalid or type(regression.evalCondition) <> "roArray"
+        print "ERROR: Could not load regression cases from: " + filePath
+        m.totalFailed = m.totalFailed + 1
+        return { passed: 0, failed: 1, skipped: 0 }
+    end if
+    for each category in ["run", "feature", "stickyBucket"]
+        if type(regression[category]) = "roArray"
+            m._runTests("regression: " + category, category, regression[category])
+        end if
+    end for
+    return m._runTests("regression: evalCondition", "evalCondition", regression.evalCondition)
+end function
+
+' ================================================================
+' Run a list of tests of one category, recording results under label
+' ================================================================
+function GrowthBookTestRunner_runTests(label as string, category as string, tests as object) as object
     passed = 0
     failed = 0
     skipped = 0
     failures = []
     
     print ""
-    print "Running: " + category + " (" + Str(tests.Count()).Trim() + " tests)"
+    print "Running: " + label + " (" + Str(tests.Count()).Trim() + " tests)"
     print "----------------------------------------------------------------"
     
     for each test in tests
@@ -124,7 +210,7 @@ function GrowthBookTestRunner_runCategory(category as string) as object
     end for
     
     ' Store results
-    m.results[category] = {
+    m.results[label] = {
         passed: passed,
         failed: failed,
         skipped: skipped,
@@ -142,7 +228,7 @@ function GrowthBookTestRunner_runCategory(category as string) as object
     if tests.Count() > 0
         percentage = Int((passed / tests.Count()) * 100)
     end if
-    print category + ": " + Str(passed).Trim() + "/" + Str(tests.Count()).Trim() + " (" + Str(percentage).Trim() + "%)"
+    print label + ": " + Str(passed).Trim() + "/" + Str(tests.Count()).Trim() + " (" + Str(percentage).Trim() + "%)"
     
     ' Print failures (max 5)
     if failures.Count() > 0 and failures.Count() <= 5
@@ -161,7 +247,7 @@ function GrowthBookTestRunner_runCategory(category as string) as object
         end for
     end if
     
-    return m.results[category]
+    return m.results[label]
 end function
 
 ' ================================================================
@@ -314,14 +400,19 @@ function GrowthBookTestRunner_runGetBucketRangeTest(test as object) as object
     gb = GrowthBook({http: {}})
     
     ' Run test
-    actual = gb._getBucketRanges(numVariations, coverage, weights)
+    actual = gb._getBucketRanges(numVariations, gb._toDouble(coverage), weights)
     
-    ' Compare ranges with tolerance
-    tolerance = 0.001
+    ' Compare ranges with a tight double-precision tolerance (the JS SDK test
+    ' rounds both sides; 0.2 + 0.2 * 0.2 is 0.04000000000000001 in doubles)
+    tolerance# = 0.000000000001
     isMatch = (actual.Count() = expected.Count())
     if isMatch
         for i = 0 to actual.Count() - 1
-            if Abs(actual[i][0] - expected[i][0]) > tolerance or Abs(actual[i][1] - expected[i][1]) > tolerance
+            startDiff# = actual[i][0] - gb._toDouble(expected[i][0])
+            if startDiff# < 0 then startDiff# = -startDiff#
+            endDiff# = actual[i][1] - gb._toDouble(expected[i][1])
+            if endDiff# < 0 then endDiff# = -endDiff#
+            if startDiff# > tolerance# or endDiff# > tolerance#
                 isMatch = false
                 exit for
             end if
@@ -346,7 +437,7 @@ function GrowthBookTestRunner_runChooseVariationTest(test as object) as object
     gb = GrowthBook({http: {}})
     
     ' Run test
-    actual = gb._chooseVariation(n, ranges)
+    actual = gb._chooseVariation(gb._toDouble(n), ranges)
     
     if actual = expected
         return { status: "passed", name: testName }
@@ -361,6 +452,20 @@ function GrowthBookTestRunner_runFeatureTest(test as object) as object
     context = test[1]
     featureKey = test[2]
     expected = test[3]
+    
+    ' Contextual bandit rules reference a bandit payload this SDK does not support yet
+    if context.features <> invalid
+        for each fk in context.features
+            f = context.features[fk]
+            if type(f) = "roAssociativeArray" and type(f.rules) = "roArray"
+                for each r in f.rules
+                    if type(r) = "roAssociativeArray" and r.DoesExist("contextualBanditRef")
+                        return { status: "skipped", name: testName }
+                    end if
+                end for
+            end if
+        end for
+    end if
     
     ' Build config from context
     config = { http: {} }

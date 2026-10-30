@@ -2,6 +2,34 @@
 
 All notable changes to the GrowthBook Roku SDK.
 
+## [Unreleased]
+
+### Breaking
+- **Strict types in condition evaluation** (spec 0.10.0, growthbook/growthbook#7379) - an attribute whose type differs from the condition value now fails the operator and matches its negation. No coercion: `"10"` no longer equals `10`, a string number no longer satisfies `$gt`/`$lt` against a number (or vice versa), a missing attribute fails comparison operators, booleans are not ordered, and version operators (`$veq`, `$vgt`, ...) need both sides to be strings or both numbers. `$exists` and `$type` are unchanged.
+- **Unsupported operators fail** (spec 0.11.0, growthbook/growthbook#7346) - a condition that depends on an operator or saved group type this SDK doesn't support now fails, including under `$not` and `$nor`, where it used to pass
+- **Rollout boundary** (spec 0.11.1, growthbook/growthbook#7425) - a rollout includes a user only when their hash is below the coverage, so a coverage of k/10000 includes exactly k hash buckets
+- **Hash attribute values** (spec 0.12.0) - only a non-empty string or a non-zero number identifies a user. `0`, `false`, `true`, `null`, `""`, arrays and objects count as missing, so the fallback attribute is tried, or the user is left out of the experiment or rollout. Integral numbers hash without a decimal part (`1.0` hashes as `"1"`)
+- **Fallback attribute** (spec 0.12.0) - `fallbackAttribute` is only used when sticky bucketing is enabled for the rule, like the JS SDK
+- **Double precision bucketing** (growthbook-roku#22) - hashes and bucket ranges are computed in double precision, and range ends round `coverage * weight` before adding it, so users whose hash lands on a range end are bucketed like the JS SDK
+
+### Added
+- **Case-insensitive operators** - `$ini`, `$nini`, `$alli` and `$regexi`
+
+### Fixed
+- **Condition edge cases** (spec 0.11.0) - `$elemMatch` with `$or`/`$and`/`$nor`/`$savedGroup` tests each element's fields; a condition value of `{}` always passes; `$or`/`$and`/`$nor`/`$savedGroup` on a value never match; `$inGroup`/`$notInGroup` read typed `list` saved groups, and a missing group no longer ends evaluation of the whole condition
+- **Prerequisite gates** - a prerequisite's condition alone decides whether it passes; a gate no longer also fails when the parent is off (growthbook-roku#23)
+- **Non-blocking prerequisites** - a failing prerequisite that is not a gate now skips the rule instead of blocking the feature, so a malformed prerequisite condition falls through to the next rule
+- **Version strings** - an empty version is treated as `0`, and empty segments (`"1..2"`) are kept, matching the JS SDK
+- **Sticky bucketing** - assignments stored under the fallback attribute are merged even when they lack the current bucket version, so `minBucketVersion` blocks old fallback assignments
+- **Non-string hash attributes** - a boolean, array or object hash attribute, namespace attribute or filter attribute no longer stops evaluation with a `Str()` runtime error
+- **Force rule filters and namespaces** - a force rule's filters no longer need the rule's hash attribute, a filter without an `attribute` hashes `id` (not the rule's `hashAttribute`), and namespaces only apply to experiment rules, like the JS SDK
+- **`$type` on large numbers** - `$type: "number"` matches `LongInteger` and `Double` values, such as `2147483648`
+- **Feature `on`/`off`** - `Double` and `LongInteger` values follow JS truthiness, so `0` of either type is off
+- **Native test runner** - `run-native.js` now fails when the interpreter stops before printing a result, instead of reporting a pass
+
+### Changed
+- **Spec tests** - `tests/cases.json` updated from spec 0.7.1 to 0.12.0; contextual bandit feature cases are skipped (not implemented), and remote saved groups (`savedGroupReferencesRemote`) are not implemented. `tests/regression-cases.json` can also hold `run`, `feature` and `stickyBucket` cases, and the JS validator compares array and object feature values deeply. Both test runners list the spec sections they don't run, with a reason, and fail on a section that is neither run nor listed. The payload reduction methods (`pruneCondition`, `reducePayload`) are not implemented for client SDKs to start with
+
 ## [1.4.1] - 2026-02-18
 
 ### Fixed

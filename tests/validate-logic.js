@@ -74,52 +74,45 @@ class GrowthBook {
         this._stickyBucketAssignmentDocs = config.stickyBucketAssignmentDocs || {};
     }
 
-    // Evaluate conditions (mirrors your BrightScript implementation)
+    // Evaluate conditions (mirrors your BrightScript implementation).
+    // Passes only when the condition is known to pass
     _evaluateConditions(condition) {
+        return this._evalConditionResult(condition) === true;
+    }
+
+    // true, false, or null when the result depends on an operator or saved
+    // group type this SDK doesn't support. A false entry decides the condition
+    _evalConditionResult(condition) {
         if (!condition || typeof condition !== 'object') {
             return true;
         }
 
-        // Empty condition
-        if (Object.keys(condition).length === 0) {
-            return true;
-        }
-
         // Process all conditions - ALL must pass (AND logic at top level)
+        let result = true;
         for (const [attr, conditionValue] of Object.entries(condition)) {
             // Handle top-level logical operators
-            if (attr === '$or') {
-                if (!Array.isArray(conditionValue) || conditionValue.length === 0) {
-                    continue;
-                }
-                if (!conditionValue.some(c => this._evaluateConditions(c))) {
-                    return false;
-                }
-                continue;
-            }
-
-            if (attr === '$nor') {
-                if (!Array.isArray(conditionValue)) continue;
-                if (conditionValue.some(c => this._evaluateConditions(c))) {
-                    return false;
-                }
+            if (attr === '$or' || attr === '$nor') {
+                let r = this._evalOrResult(conditionValue);
+                if (attr === '$nor' && r !== null) r = !r;
+                if (r === false) return false;
+                if (r === null) result = null;
                 continue;
             }
 
             if (attr === '$and') {
-                if (!Array.isArray(conditionValue) || conditionValue.length === 0) {
-                    continue;
-                }
-                if (!conditionValue.every(c => this._evaluateConditions(c))) {
-                    return false;
+                if (!Array.isArray(conditionValue)) continue;
+                for (const c of conditionValue) {
+                    const r = this._evalConditionResult(c);
+                    if (r === false) return false;
+                    if (r === null) result = null;
                 }
                 continue;
             }
 
             if (attr === '$not') {
-                if (this._evaluateConditions(conditionValue)) {
-                    return false;
-                }
+                const r = this._evalConditionResult(conditionValue);
+                if (r === true) return false;
+                if (r === null) result = null;
                 continue;
             }
 
@@ -127,63 +120,65 @@ class GrowthBook {
 
             const value = this._getAttributeValue(attr);
 
-            if (typeof conditionValue === 'object' && conditionValue !== null && !Array.isArray(conditionValue)) {
-                // Operator conditions
-                if ('$eq' in conditionValue && value !== conditionValue.$eq) return false;
-                if ('$ne' in conditionValue && value === conditionValue.$ne) return false;
-                if ('$lt' in conditionValue && !(value < conditionValue.$lt)) return false;
-                if ('$lte' in conditionValue && !(value <= conditionValue.$lte)) return false;
-                if ('$gt' in conditionValue && !(value > conditionValue.$gt)) return false;
-                if ('$gte' in conditionValue && !(value >= conditionValue.$gte)) return false;
+            // An object whose keys all start with "$" holds operators. Any other
+            // object, including one mixing operators and fields, is a plain value
+            const isOperatorObject = typeof conditionValue === 'object' && conditionValue !== null &&
+                !Array.isArray(conditionValue) && Object.keys(conditionValue).every(k => k.startsWith('$'));
+
+            if (isOperatorObject) {
+                // Operator conditions. An empty object has no operators, so it passes
+                let valueUnknown = false;
+                if ('$eq' in conditionValue && !this._valuesEqual(value, conditionValue.$eq)) return false;
+                if ('$ne' in conditionValue && this._valuesEqual(value, conditionValue.$ne)) return false;
+                // No coercion: both sides must be numbers, or both strings
+                const orderable = (expected) => this._isOrderable(value, expected);
+                if ('$lt' in conditionValue && !(orderable(conditionValue.$lt) && value < conditionValue.$lt)) return false;
+                if ('$lte' in conditionValue && !(orderable(conditionValue.$lte) && value <= conditionValue.$lte)) return false;
+                if ('$gt' in conditionValue && !(orderable(conditionValue.$gt) && value > conditionValue.$gt)) return false;
+                if ('$gte' in conditionValue && !(orderable(conditionValue.$gte) && value >= conditionValue.$gte)) return false;
                 
                 // Version comparison operators
                 if ('$veq' in conditionValue) {
+                    if (!orderable(conditionValue.$veq)) return false;
                     const v1 = this._paddedVersionString(value);
                     const v2 = this._paddedVersionString(conditionValue.$veq);
                     if (v1 !== v2) return false;
                 }
-                if ('$vne' in conditionValue) {
+                // A type mismatch is "not equal", so $vne passes
+                if ('$vne' in conditionValue && orderable(conditionValue.$vne)) {
                     const v1 = this._paddedVersionString(value);
                     const v2 = this._paddedVersionString(conditionValue.$vne);
                     if (v1 === v2) return false;
                 }
                 if ('$vlt' in conditionValue) {
+                    if (!orderable(conditionValue.$vlt)) return false;
                     const v1 = this._paddedVersionString(value);
                     const v2 = this._paddedVersionString(conditionValue.$vlt);
                     if (!(v1 < v2)) return false;
                 }
                 if ('$vlte' in conditionValue) {
+                    if (!orderable(conditionValue.$vlte)) return false;
                     const v1 = this._paddedVersionString(value);
                     const v2 = this._paddedVersionString(conditionValue.$vlte);
                     if (!(v1 <= v2)) return false;
                 }
                 if ('$vgt' in conditionValue) {
+                    if (!orderable(conditionValue.$vgt)) return false;
                     const v1 = this._paddedVersionString(value);
                     const v2 = this._paddedVersionString(conditionValue.$vgt);
                     if (!(v1 > v2)) return false;
                 }
                 if ('$vgte' in conditionValue) {
+                    if (!orderable(conditionValue.$vgte)) return false;
                     const v1 = this._paddedVersionString(value);
                     const v2 = this._paddedVersionString(conditionValue.$vgte);
                     if (!(v1 >= v2)) return false;
                 }
                 
-                if ('$in' in conditionValue) {
-                    if (!Array.isArray(conditionValue.$in)) return false;
-                    if (Array.isArray(value)) {
-                        // Array intersection
-                        if (!value.some(v => conditionValue.$in.includes(v))) return false;
-                    } else {
-                        if (!conditionValue.$in.includes(value)) return false;
-                    }
-                }
-                
-                if ('$nin' in conditionValue) {
-                    if (!Array.isArray(conditionValue.$nin)) return false;
-                    if (Array.isArray(value)) {
-                        if (value.some(v => conditionValue.$nin.includes(v))) return false;
-                    } else {
-                        if (conditionValue.$nin.includes(value)) return false;
+                for (const [op, insensitive, negate] of [['$in', false, false], ['$ini', true, false], ['$nin', false, true], ['$nini', true, true]]) {
+                    if (op in conditionValue) {
+                        if (!Array.isArray(conditionValue[op])) return false;
+                        if (this._isIn(value, conditionValue[op], insensitive) === negate) return false;
                     }
                 }
 
@@ -197,111 +192,138 @@ class GrowthBook {
                     if (actualType !== conditionValue.$type) return false;
                 }
 
-                if ('$regex' in conditionValue) {
-                    if (typeof value !== 'string') return false;
-                    try {
-                        const regex = new RegExp(conditionValue.$regex);
-                        if (!regex.test(value)) return false;
-                    } catch (e) {
-                        return false;
+                for (const op of ['$regex', '$regexi']) {
+                    if (op in conditionValue) {
+                        if (typeof value !== 'string') return false;
+                        try {
+                            const regex = new RegExp(conditionValue[op], op === '$regexi' ? 'i' : undefined);
+                            if (!regex.test(value)) return false;
+                        } catch (e) {
+                            return false;
+                        }
                     }
                 }
 
                 if ('$elemMatch' in conditionValue) {
                     if (!Array.isArray(value)) return false;
-                    let found = false;
+                    const expected = conditionValue.$elemMatch;
+                    if (typeof expected !== 'object' || expected === null || Array.isArray(expected)) return false;
+                    // Operators test each element itself. A condition, including one that
+                    // only uses $or, $and, $nor or $savedGroup, tests each element's fields
+                    const perElement = Object.keys(expected).every(k => k.startsWith('$') &&
+                        !['$or', '$and', '$nor', '$savedGroup'].includes(k));
+                    let matched = false;
                     for (const item of value) {
+                        // Only skip null elements; 0, "" and false are still tested
+                        if (item === null || item === undefined) continue;
                         let itemAttrs;
                         let tempCond;
-                        
-                        if (typeof item === 'object' && item !== null && !Array.isArray(item)) {
-                            // For objects, evaluate condition directly against item
-                            itemAttrs = item;
-                            tempCond = conditionValue.$elemMatch;
-                        } else {
-                            // For primitives, wrap in special "_" attribute
+                        if (perElement) {
                             itemAttrs = { _: item };
-                            tempCond = { _: conditionValue.$elemMatch };
+                            tempCond = { _: expected };
+                        } else {
+                            // A non-object element has no fields, so every path is missing
+                            itemAttrs = (typeof item === 'object' && !Array.isArray(item)) ? item : {};
+                            tempCond = expected;
                         }
-                        
                         const tempGB = new GrowthBook({ attributes: itemAttrs, savedGroups: this.savedGroups });
-                        if (tempGB._evaluateConditions(tempCond)) {
-                            found = true;
-                            break;
-                        }
+                        const r = tempGB._evalConditionResult(tempCond);
+                        if (r === true) { matched = true; break; }
+                        if (r === null) matched = null;
                     }
-                    if (!found) return false;
+                    if (matched === null) valueUnknown = true;
+                    else if (!matched) return false;
                 }
 
                 if ('$size' in conditionValue) {
                     if (!Array.isArray(value)) return false;
-                    if (typeof conditionValue.$size === 'number') {
-                        if (value.length !== conditionValue.$size) return false;
+                    if (typeof conditionValue.$size !== 'object' || conditionValue.$size === null) {
+                        if (!this._valuesEqual(value.length, conditionValue.$size)) return false;
                     } else if (typeof conditionValue.$size === 'object') {
                         const tempGB = new GrowthBook({ attributes: { _size: value.length }, savedGroups: this.savedGroups });
-                        const tempCond = { _size: conditionValue.$size };
-                        if (!tempGB._evaluateConditions(tempCond)) return false;
+                        const r = tempGB._evalConditionResult({ _size: conditionValue.$size });
+                        if (r === false) return false;
+                        if (r === null) valueUnknown = true;
                     }
                 }
 
-                if ('$all' in conditionValue) {
-                    if (!Array.isArray(value) || !Array.isArray(conditionValue.$all)) return false;
-                    for (const required of conditionValue.$all) {
-                        if (!value.includes(required)) return false;
+                for (const op of ['$all', '$alli']) {
+                    if (op in conditionValue) {
+                        if (!Array.isArray(value) || !Array.isArray(conditionValue[op])) return false;
+                        for (const required of conditionValue[op]) {
+                            if (!this._isIn(required, value, op === '$alli')) return false;
+                        }
                     }
                 }
 
-                if ('$inGroup' in conditionValue) {
-                    const groupId = conditionValue.$inGroup;
-                    if (typeof groupId !== 'string') return false;
-                    const savedGroup = this.savedGroups[groupId];
-                    if (!savedGroup) return false;
-                    if (!Array.isArray(savedGroup)) return false;
-                    if (!savedGroup.includes(value)) return false;
-                }
-
-                if ('$notInGroup' in conditionValue) {
-                    const groupId = conditionValue.$notInGroup;
-                    if (typeof groupId !== 'string') return false;
-                    const savedGroup = this.savedGroups[groupId];
-                    if (!savedGroup) return true; // Group not found, so not in group
-                    if (!Array.isArray(savedGroup)) return false;
-                    if (savedGroup.includes(value)) return false;
+                for (const op of ['$inGroup', '$notInGroup']) {
+                    if (op in conditionValue) {
+                        const groupId = conditionValue[op];
+                        if (typeof groupId !== 'string') return false;
+                        const values = this._savedGroupValues(groupId);
+                        if (values === null) {
+                            // A group type added after this SDK was built
+                            valueUnknown = true;
+                        } else if (!Array.isArray(values)) {
+                            // A condition group or a malformed entry matches nobody
+                            return false;
+                        } else {
+                            const found = values.some(member => this._valuesEqual(value, member));
+                            if (found !== (op === '$inGroup')) return false;
+                        }
+                    }
                 }
 
                 if ('$not' in conditionValue) {
                     // Negation operator on attribute value
                     const tempGB = new GrowthBook({ attributes: this.attributes, savedGroups: this.savedGroups });
-                    const tempCond = { [attr]: conditionValue.$not };
-                    if (tempGB._evaluateConditions(tempCond)) {
-                        return false;
-                    }
+                    const r = tempGB._evalConditionResult({ [attr]: conditionValue.$not });
+                    if (r === true) return false;
+                    if (r === null) valueUnknown = true;
                 }
 
-                // Check for unknown operators (operators starting with $)
-                const knownOps = ['$eq', '$ne', '$lt', '$lte', '$gt', '$gte', '$veq', '$vne', '$vlt', '$vlte', '$vgt', '$vgte', '$in', '$nin', '$exists', '$type', '$regex', '$elemMatch', '$size', '$all', '$inGroup', '$notInGroup', '$not'];
-                let hasOperator = false;
+                const knownOps = ['$eq', '$ne', '$lt', '$lte', '$gt', '$gte', '$veq', '$vne', '$vlt', '$vlte', '$vgt', '$vgte', '$in', '$ini', '$nin', '$nini', '$exists', '$type', '$regex', '$regexi', '$elemMatch', '$size', '$all', '$alli', '$inGroup', '$notInGroup', '$not'];
                 for (const key of Object.keys(conditionValue)) {
-                    if (key.startsWith('$')) {
-                        if (!knownOps.includes(key)) {
-                            // Unknown operator - fail the condition
-                            return false;
-                        }
-                        hasOperator = true;
-                    }
+                    // Keys that belong on a condition, not on a value, never match
+                    if (['$or', '$and', '$nor', '$savedGroup'].includes(key)) return false;
+                    // An operator this SDK doesn't support: the client's SDK may
+                    if (!knownOps.includes(key)) valueUnknown = true;
                 }
-                
-                // If no operators found, treat as direct equality
-                if (!hasOperator) {
-                    if (!this._deepEqual(value, conditionValue)) return false;
-                }
+
+                if (valueUnknown) result = null;
             } else {
                 // Direct equality
                 if (!this._deepEqual(value, conditionValue)) return false;
             }
         }
 
-        return true;
+        return result;
+    }
+
+    // $or: true if any condition passes, null if none passes but one is unknown,
+    // false otherwise. An empty or non-array list passes, as in JS
+    _evalOrResult(conditions) {
+        if (!Array.isArray(conditions) || conditions.length === 0) return true;
+        let result = false;
+        for (const c of conditions) {
+            const r = this._evalConditionResult(c);
+            if (r === true) return true;
+            if (r === null) result = null;
+        }
+        return result;
+    }
+
+    // Values of a saved group for $inGroup / $notInGroup: an array, false for a
+    // group that matches nobody, or null for a group type added after this SDK
+    // was built. An unknown id behaves like an empty list
+    _savedGroupValues(groupId) {
+        if (!Object.prototype.hasOwnProperty.call(this.savedGroups, groupId)) return [];
+        const entry = this.savedGroups[groupId];
+        if (Array.isArray(entry)) return entry;
+        if (!entry || typeof entry !== 'object') return false;
+        if (entry.type === 'list') return Array.isArray(entry.values) ? entry.values : false;
+        if (entry.type === 'condition') return false;
+        return null;
     }
 
     _getAttributeValue(attr) {
@@ -309,7 +331,7 @@ class GrowthBook {
             const parts = attr.split('.');
             let value = this.attributes;
             for (const part of parts) {
-                if (value && typeof value === 'object') {
+                if (value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, part)) {
                     value = value[part];
                 } else {
                     return null;
@@ -317,8 +339,31 @@ class GrowthBook {
             }
             return value === undefined ? null : value;
         }
+        // Own keys only, like a BrightScript associative array
+        if (!Object.prototype.hasOwnProperty.call(this.attributes, attr)) return null;
         const val = this.attributes[attr];
         return val === undefined ? null : val;
+    }
+
+    // Mirrors BrightScript _getHashValue: only a non-empty string or a finite,
+    // non-zero number identifies a user; anything else is "" (missing)
+    _getHashValue(attr) {
+        const value = this._getAttributeValue(attr);
+        if (typeof value === 'string') return value;
+        if (typeof value === 'number' && value !== 0 && Number.isFinite(value)) return String(value);
+        return '';
+    }
+
+    // Mirrors BrightScript _isFilteredOut: each filter hashes its own attribute
+    // ("id" by default), and a missing hash value filters the user out
+    _isFilteredOut(filters, featureKey) {
+        return filters.some(filter => {
+            const hashValue = this._getHashValue(filter.attribute || 'id');
+            if (hashValue === '') return true;
+            const n = this._gbhash(filter.seed || featureKey, hashValue, filter.hashVersion || 2);
+            if (n === null) return true;
+            return !(filter.ranges || []).some(range => this._inRange(n, range));
+        });
     }
 
     _getType(value) {
@@ -329,6 +374,25 @@ class GrowthBook {
         if (Array.isArray(value)) return 'array';
         if (typeof value === 'object') return 'object';
         return 'unknown';
+    }
+
+    // True when both values are numbers, or both are strings
+    _isOrderable(a, b) {
+        const t = this._getType(a);
+        return (t === 'number' || t === 'string') && t === this._getType(b);
+    }
+
+    // Strict equality: different JSON types are never equal
+    _valuesEqual(a, b) {
+        if (this._getType(a) !== this._getType(b)) return false;
+        return this._deepEqual(a, b);
+    }
+
+    // Mirrors BrightScript _isIn: intersection for arrays, optional case folding
+    _isIn(actual, expected, insensitive) {
+        const fold = (v) => (insensitive && typeof v === 'string' ? v.toLowerCase() : v);
+        const values = Array.isArray(actual) ? actual : [actual];
+        return values.some(v => expected.some(e => this._valuesEqual(fold(v), fold(e))));
     }
 
     _deepEqual(a, b) {
@@ -359,7 +423,7 @@ class GrowthBook {
         }
         
         if (!input || typeof input !== 'string') {
-            return '0';
+            input = '0';
         }
         
         let version = input;
@@ -502,7 +566,7 @@ class GrowthBook {
 
         if (typeof feature === 'object' && feature !== null && !Array.isArray(feature)) {
             if (feature.rules) {
-                for (const rule of feature.rules) {
+                rules: for (const rule of feature.rules) {
                     // Check parent conditions (prerequisites)
                     if (rule.parentConditions) {
                         let parentsPassed = true;
@@ -516,20 +580,15 @@ class GrowthBook {
                                 return result;
                             }
                             
-                            // Check if parent gate is satisfied
-                            if (parent.gate && !parentResult.on) {
-                                result.source = 'prerequisite';
-                                this._evaluationStack.pop();
-                                return result;
-                            }
-                            
-                            // Check parent condition
-                            if (parent.condition) {
+                            // The condition alone decides; a gate only changes what a failure does
+                            {
                                 const tempGb = new GrowthBook({
                                     attributes: { value: parentResult.value },
                                     savedGroups: this.savedGroups
                                 });
-                                if (!tempGb._evaluateConditions(parent.condition)) {
+                                if (!tempGb._evaluateConditions(parent.condition || {})) {
+                                    // Only a gate blocks the feature; any other failing prerequisite skips this rule
+                                    if (!parent.gate) continue rules;
                                     result.source = 'prerequisite';
                                     this._evaluationStack.pop();
                                     return result;
@@ -540,64 +599,17 @@ class GrowthBook {
                     
                     if (this._evaluateConditions(rule.condition)) {
                         if (rule.force !== undefined) {
-                            // Check if force rule has coverage, range, filters, or hashVersion
-                            if (rule.coverage !== undefined || rule.range || rule.filters || (rule.hashVersion && rule.hashVersion !== 1)) {
-                                const hashAttribute = rule.hashAttribute || 'id';
-                                let hashValue = this._getAttributeValue(hashAttribute);
-                                if (hashValue !== null && hashValue !== '') {
-                                    if (typeof hashValue !== 'string') {
-                                        hashValue = String(hashValue);
-                                    }
-                                    const hashVersion = rule.hashVersion || 1;
-                                    
-                                    // Check filters (all must pass)
-                                    if (rule.filters) {
-                                        let passedFilters = true;
-                                        for (const filter of rule.filters) {
-                                            const filterSeed = filter.seed || key;
-                                            const n = this._gbhash(filterSeed, hashValue, hashVersion);
-                                            if (n === null) {
-                                                passedFilters = false;
-                                                break;
-                                            }
-                                            let inAnyRange = false;
-                                            for (const range of filter.ranges) {
-                                                if (this._inRange(n, range)) {
-                                                    inAnyRange = true;
-                                                    break;
-                                                }
-                                            }
-                                            if (!inAnyRange) {
-                                                passedFilters = false;
-                                                break;
-                                            }
-                                        }
-                                        if (!passedFilters) {
-                                            continue;
-                                        }
-                                    } else {
-                                        const seed = rule.seed || rule.key || key;
-                                        const n = this._gbhash(seed, hashValue, hashVersion);
-                                        if (n === null) {
-                                            continue;
-                                        }
-                                        
-                                        // Check range first (takes precedence over coverage)
-                                        if (rule.range) {
-                                            if (!this._inRange(n, rule.range)) {
-                                                continue;
-                                            }
-                                        } else if (rule.coverage !== undefined) {
-                                            // Check coverage only if no range (0 means skip everyone)
-                                            if (rule.coverage === 0 || n > rule.coverage) {
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    // Missing hashAttribute, skip rule
-                                    continue;
-                                }
+                            // Filters, then the rollout (range or coverage). Mirrors
+                            // BrightScript _isForceRuleIncluded: only a rollout needs the
+                            // rule's hash attribute, and namespaces only apply to experiments
+                            if (rule.filters && this._isFilteredOut(rule.filters, key)) continue;
+                            if (rule.range || rule.coverage !== undefined) {
+                                if (!rule.range && rule.coverage === 0) continue;
+                                const hashValue = this._getHashValue(rule.hashAttribute || 'id');
+                                if (hashValue === '') continue;
+                                const n = this._gbhash(rule.seed || key, hashValue, rule.hashVersion || 1);
+                                if (n === null) continue;
+                                if (rule.range ? !this._inRange(n, rule.range) : n >= rule.coverage) continue;
                             }
                             result.value = rule.force;
                             result.on = !!result.value;
@@ -667,23 +679,20 @@ class GrowthBook {
         // Get hash context
         const hashAttribute = rule.hashAttribute || 'id';
         let resolvedHashAttr = hashAttribute;
-        let hashValue = this._getAttributeValue(hashAttribute);
+        let hashValue = this._getHashValue(hashAttribute);
         
-        // Fallback attribute support
-        if ((hashValue === null || hashValue === '') && rule.fallbackAttribute) {
-            hashValue = this._getAttributeValue(rule.fallbackAttribute);
-            if (hashValue !== null && hashValue !== '') {
+        // Fallback attribute support, only with sticky bucketing enabled
+        const usesStickyBucketing = this.stickyBucketService && !rule.disableStickyBucketing;
+        if (hashValue === '' && usesStickyBucketing && rule.fallbackAttribute) {
+            hashValue = this._getHashValue(rule.fallbackAttribute);
+            if (hashValue !== '') {
                 resolvedHashAttr = rule.fallbackAttribute;
             }
         }
         
         // Skip if required hashAttribute is missing
-        if (hashValue === null || hashValue === '') {
+        if (hashValue === '') {
             return result;
-        }
-        
-        if (typeof hashValue !== 'string') {
-            hashValue = String(hashValue);
         }
 
         const seed = rule.seed || rule.key || featureKey;
@@ -717,7 +726,7 @@ class GrowthBook {
             if (n === null) return result;
 
             if (coverage < 1.0) {
-                if (n > coverage) return result;
+                if (n >= coverage) return result;
             }
 
             const ranges = rule.ranges || this._getBucketRanges(rule.variations.length, coverage, rule.weights);
@@ -766,30 +775,24 @@ class GrowthBook {
 
         // 1. Check fallbackAttribute first (lower priority)
         if (rule.fallbackAttribute) {
-            let fallbackVal = this._getAttributeValue(rule.fallbackAttribute);
-            if (fallbackVal !== null && fallbackVal !== undefined) {
-                if (typeof fallbackVal !== 'string') fallbackVal = String(fallbackVal);
-                if (fallbackVal !== '') {
-                    const fallbackKey = `${rule.fallbackAttribute}||${fallbackVal}`;
-                    const fallbackDoc = this._stickyBucketAssignmentDocs[fallbackKey];
-                    if (fallbackDoc && fallbackDoc.assignments) {
-                        Object.assign(mergedAssignments, fallbackDoc.assignments);
-                    }
+            const fallbackVal = this._getHashValue(rule.fallbackAttribute);
+            if (fallbackVal !== '') {
+                const fallbackKey = `${rule.fallbackAttribute}||${fallbackVal}`;
+                const fallbackDoc = this._stickyBucketAssignmentDocs[fallbackKey];
+                if (fallbackDoc && fallbackDoc.assignments) {
+                    Object.assign(mergedAssignments, fallbackDoc.assignments);
                 }
             }
         }
 
         // 2. Check hashAttribute (higher priority)
         const hashAttr = rule.hashAttribute || 'id';
-        let hashVal = this._getAttributeValue(hashAttr);
-        if (hashVal !== null && hashVal !== undefined) {
-            if (typeof hashVal !== 'string') hashVal = String(hashVal);
-            if (hashVal !== '') {
-                const hashKey = `${hashAttr}||${hashVal}`;
-                const hashDoc = this._stickyBucketAssignmentDocs[hashKey];
-                if (hashDoc && hashDoc.assignments) {
-                    Object.assign(mergedAssignments, hashDoc.assignments);
-                }
+        const hashVal = this._getHashValue(hashAttr);
+        if (hashVal !== '') {
+            const hashKey = `${hashAttr}||${hashVal}`;
+            const hashDoc = this._stickyBucketAssignmentDocs[hashKey];
+            if (hashDoc && hashDoc.assignments) {
+                Object.assign(mergedAssignments, hashDoc.assignments);
             }
         }
 
@@ -847,6 +850,12 @@ class GrowthBook {
 // ================================================================
 // Test Runner
 // ================================================================
+
+// Contextual bandit rules reference a bandit payload this SDK does not support yet
+function usesContextualBandit(context) {
+    return Object.values(context.features || {}).some(f =>
+        (f && f.rules || []).some(r => r && r.contextualBanditRef !== undefined));
+}
 
 function runTests(category, tests) {
     console.log(`\n📦 Testing: ${category}`);
@@ -937,6 +946,9 @@ function runTests(category, tests) {
                     process.stdout.write('✗');
                     failures.push({ name, expected, actual: result });
                 }
+            } else if (category === 'feature' && usesContextualBandit(rest[0])) {
+                // Contextual bandits are not implemented in this SDK yet
+                process.stdout.write('○');
             } else if (category === 'feature') {
                 const [context, featureKey, expected] = rest;
                 const gb = new GrowthBook({
@@ -948,7 +960,8 @@ function runTests(category, tests) {
                 result = gb.evalFeature(featureKey);
                 
                 // Compare key fields
-                const match = result.value === expected.value &&
+                // Values can be arrays or objects, so compare them deeply
+                const match = gb._deepEqual(result.value, expected.value) &&
                              result.on === expected.on &&
                              result.off === expected.off &&
                              result.source === expected.source;
@@ -1105,9 +1118,39 @@ function runTests(category, tests) {
 const results = {};
 const categories = ['evalCondition', 'hash', 'getBucketRange', 'chooseVariation', 'feature', 'decrypt', 'stickyBucket'];
 
+// Spec sections this validator doesn't run, and why. Keep in sync with
+// GrowthBookTestRunner_excludedSections in tests/GrowthBookTestRunner.brs
+const payloadReduction = 'The payload reduction methods (pruneCondition, reducePayload) are not implemented for client SDKs to start with';
+const excludedSections = {
+    pruneCondition: payloadReduction,
+    reducePayload: payloadReduction,
+    contextualBandit: 'Contextual bandits are not implemented',
+    savedGroupReferencesV2: '$savedGroup references (saved groups v2) are not implemented',
+    savedGroupReferencesRemote: 'Remote saved groups are not implemented',
+    getQueryStringOverride: 'Query string overrides are not implemented',
+    urlRedirect: 'URL redirects are a browser feature',
+    inNamespace: 'No standalone runner yet; namespaces are covered by feature and run cases',
+    getEqualWeights: 'No standalone runner yet; equal weights are covered by getBucketRange cases',
+    run: 'Run by the native brs runner only',
+};
+
 for (const category of categories) {
     if (cases[category]) {
         results[category] = runTests(category, cases[category]);
+    }
+}
+
+// Fail when cases.json has a section that is neither run nor excluded, so a
+// new spec section can't be skipped silently
+let unlistedSections = 0;
+console.log('\nSpec sections not run:');
+for (const section of Object.keys(cases)) {
+    if (section === 'specVersion' || categories.includes(section)) continue;
+    if (excludedSections[section]) {
+        console.log(`  - ${section}: ${excludedSections[section]}`);
+    } else {
+        console.log(`  - ${section}: ERROR neither run nor excluded`);
+        unlistedSections++;
     }
 }
 
@@ -1131,6 +1174,8 @@ for (const [category, result] of Object.entries(results)) {
 
 console.log('─'.repeat(60));
 console.log(`TOTAL: ${totalPassed}/${totalTests} tests passed (${((totalPassed/totalTests)*100).toFixed(1)}%)`);
+
+totalFailed += unlistedSections;
 
 if (totalFailed === 0) {
     console.log('\n✅ All tests passed!');

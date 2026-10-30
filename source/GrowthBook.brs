@@ -46,23 +46,36 @@ function GrowthBook(config as object) as object
         _loadFeaturesFromAPI: GrowthBook__loadFeaturesFromAPI,
         _parseFeatures: GrowthBook__parseFeatures,
         _evaluateConditions: GrowthBook__evaluateConditions,
+        _evalConditionResult: GrowthBook__evalConditionResult,
+        _evalOrResult: GrowthBook__evalOrResult,
+        _savedGroupValues: GrowthBook__savedGroupValues,
         _getAttributeValue: GrowthBook__getAttributeValue,
         _fnv1a32: GrowthBook__fnv1a32,
         _longToStr: GrowthBook__longToStr,
+        _hashValueString: GrowthBook__hashValueString,
+        _getHashValue: GrowthBook__getHashValue,
         _gbhash: GrowthBook__gbhash,
         _paddedVersionString: GrowthBook__paddedVersionString,
         _isIncludedInRollout: GrowthBook__isIncludedInRollout,
         _getBucketRanges: GrowthBook__getBucketRanges,
         _chooseVariation: GrowthBook__chooseVariation,
         _inRange: GrowthBook__inRange,
+        _toDouble: GrowthBook__toDouble,
         _deepEqual: GrowthBook__deepEqual,
         _compare: GrowthBook__compare,
+        _jsonType: GrowthBook__jsonType,
+        _isOrderable: GrowthBook__isOrderable,
+        _valuesEqual: GrowthBook__valuesEqual,
+        _isIn: GrowthBook__isIn,
+        _isInAll: GrowthBook__isInAll,
         _trackExperiment: GrowthBook__trackExperiment,
         _trackFeatureUsage: GrowthBook__trackFeatureUsage,
         _evaluateExperiment: GrowthBook__evaluateExperiment,
         _inNamespace: GrowthBook__inNamespace,
         _getHashContext: GrowthBook__getHashContext,
         _isRuleIncluded: GrowthBook__isRuleIncluded,
+        _isForceRuleIncluded: GrowthBook__isForceRuleIncluded,
+        _isFilteredOut: GrowthBook__isFilteredOut,
         _log: GrowthBook__log,
         _hashAttribute: GrowthBook__hashAttribute,
         _decrypt: GrowthBook__decrypt,
@@ -446,6 +459,7 @@ function GrowthBook_evalFeature(key as string) as object
                 if type(rule) = "roAssociativeArray"
                     while true
                         ' 1. Prerequisites
+                        skipRule = false
                         if rule.parentConditions <> invalid
                             for each parent in rule.parentConditions
                                 parentResult = m.evalFeature(parent.id)
@@ -456,14 +470,16 @@ function GrowthBook_evalFeature(key as string) as object
                                     return result
                                 end if
                                 
-                                gateFailed = (GrowthBook_toBoolean(parent.gate) and not parentResult.on)
-                                conditionFailed = false
-                                if parent.condition <> invalid
-                                    tempGB = GrowthBook({ attributes: { value: parentResult.value }, savedGroups: m.savedGroups, http: m.http })
-                                    if not tempGB._evaluateConditions(parent.condition) then conditionFailed = true
-                                end if
-                                
-                                if gateFailed or conditionFailed
+                                ' The condition alone decides; a gate only changes what a failure does
+                                parentCondition = parent.condition
+                                if parentCondition = invalid then parentCondition = {}
+                                tempGB = GrowthBook({ attributes: { value: parentResult.value }, savedGroups: m.savedGroups, http: m.http })
+                                if not tempGB._evaluateConditions(parentCondition)
+                                    ' Only a gate blocks the feature; any other failing prerequisite skips this rule
+                                    if not GrowthBook_toBoolean(parent.gate)
+                                        skipRule = true
+                                        exit for
+                                    end if
                                     result.source = "prerequisite"
                                     m._evaluationStack.Pop()
                                     m._trackFeatureUsage(key, result)
@@ -471,27 +487,15 @@ function GrowthBook_evalFeature(key as string) as object
                                 end if
                             end for
                         end if
+                        if skipRule then exit while
                         
                         ' 2. Rule Condition
                         if not m._evaluateConditions(rule.condition) then exit while
                         
-                        ' Namespace check
-                        if rule.namespace <> invalid
-                            hashAttribute = "id"
-                            if rule.hashAttribute <> invalid and rule.hashAttribute <> "" then hashAttribute = rule.hashAttribute
-                            hashValue = m._getAttributeValue(hashAttribute)
-                            if hashValue = invalid then exit while
-                            if type(hashValue) <> "roString" and type(hashValue) <> "String"
-                                hashValue = Str(hashValue).Trim()
-                            end if
-                            if hashValue = "" then exit while
-                            if not m._inNamespace(hashValue, rule.namespace) then exit while
-                        end if
-                        
                         ' 3. Force Rule
                         if rule.DoesExist("force")
-                            ' Handle coverage/range/filters/hashVersion for force rules
-                            if not m._isRuleIncluded(rule, key) then exit while
+                            ' Filters and rollout (range/coverage) for force rules
+                            if not m._isForceRuleIncluded(rule, key) then exit while
                             
                             result.value = rule.force
                             result.on = GrowthBook_toBoolean(rule.force)
@@ -640,14 +644,10 @@ function GrowthBook__evaluateExperiment(rule as object, result as object) as obj
                     return result
                 end if
                 
-                gateFailed = (GrowthBook_toBoolean(parent.gate) and not parentResult.on)
-                conditionFailed = false
-                if parent.condition <> invalid
-                    tempGB = GrowthBook({ attributes: { value: parentResult.value }, savedGroups: m.savedGroups, http: m.http })
-                    if not tempGB._evaluateConditions(parent.condition) then conditionFailed = true
-                end if
-                
-                if gateFailed or conditionFailed
+                parentCondition = parent.condition
+                if parentCondition = invalid then parentCondition = {}
+                tempGB = GrowthBook({ attributes: { value: parentResult.value }, savedGroups: m.savedGroups, http: m.http })
+                if not tempGB._evaluateConditions(parentCondition)
                     m._log("Prerequisite failed")
                     return result
                 end if
@@ -691,9 +691,9 @@ function GrowthBook__evaluateExperiment(rule as object, result as object) as obj
         if rule.ranges <> invalid
             ranges = rule.ranges
         else
-            coverage = 1.0
-            if rule.coverage <> invalid then coverage = rule.coverage
-            ranges = m._getBucketRanges(rule.variations.Count(), coverage, rule.weights)
+            coverage# = 1
+            if rule.coverage <> invalid then coverage# = m._toDouble(rule.coverage)
+            ranges = m._getBucketRanges(rule.variations.Count(), coverage#, rule.weights)
         end if
         assigned = m._chooseVariation(n, ranges)
     end if
@@ -794,37 +794,55 @@ function GrowthBook_refreshFeatures() as boolean
 end function
 
 ' ===================================================================
-' Get attribute value (supports nested paths like "user.age")
+' Get attribute value (supports nested paths like "user.age"). Like JS
+' getPath, each part reads an object key or an array's own key: a canonical
+' index ("0", "1", ...) or "length"
 ' ===================================================================
 function GrowthBook__getAttributeValue(attr as string) as dynamic
-    ' Check for nested path (e.g., "father.age")
+    value = m.attributes
     if Instr(1, attr, ".") > 0
         parts = attr.Split(".")
-        value = m.attributes
-        
-        for each part in parts
-            if type(value) = "roAssociativeArray" and value.DoesExist(part)
-                value = value[part]
+    else
+        parts = [attr]
+    end if
+    for each part in parts
+        if type(value) = "roAssociativeArray"
+            if not value.DoesExist(part) then return invalid
+            value = value[part]
+        else if type(value) = "roArray"
+            if part = "length"
+                value = value.Count()
+            else if part = "0" or (Len(part) > 0 and Len(part) < 10 and Left(part, 1) <> "0" and CreateObject("roRegex", "^[0-9]+$", "").IsMatch(part))
+                index = part.ToInt()
+                if index >= value.Count() then return invalid
+                value = value[index]
             else
                 return invalid
             end if
-        end for
-        
-        return value
-    end if
-    
-    ' Simple attribute
-    if m.attributes.DoesExist(attr)
-        return m.attributes[attr]
-    end if
-    
-    return invalid
+        else
+            return invalid
+        end if
+    end for
+    return value
 end function
 
 ' ===================================================================
 ' Evaluate conditions (rules) against user attributes
+' Passes only when the condition is known to pass: a condition that
+' depends on an operator or saved group type this SDK doesn't support fails
 ' ===================================================================
 function GrowthBook__evaluateConditions(condition as object) as boolean
+    r = m._evalConditionResult(condition)
+    if r = invalid then return false
+    return r
+end function
+
+' ===================================================================
+' Evaluate a condition to true, false, or invalid when the result depends on
+' an operator or saved group type this SDK doesn't support. A false entry
+' decides the condition wherever an unsupported one is
+' ===================================================================
+function GrowthBook__evalConditionResult(condition as object) as dynamic
     if condition = invalid
         return true
     end if
@@ -839,37 +857,26 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
     end if
     
     ' Process all conditions - ALL must pass (AND logic at top level)
+    result = true
     for each attr in condition
         ' Handle logical operators
         if attr = "$or"
-            if type(condition["$or"]) <> "roArray"
-                continue for
-            end if
-            if condition["$or"].Count() = 0
-                continue for
-            end if
-            orPassed = false
-            for each subcond in condition["$or"]
-                if m._evaluateConditions(subcond)
-                    orPassed = true
-                    exit for
-                end if
-            end for
-            if not orPassed
+            r = m._evalOrResult(condition["$or"])
+            if r = invalid
+                result = invalid
+            else if not r
                 return false
             end if
             continue for
         end if
         
         if attr = "$nor"
-            if type(condition["$nor"]) <> "roArray"
-                continue for
+            r = m._evalOrResult(condition["$nor"])
+            if r = invalid
+                result = invalid
+            else if r
+                return false
             end if
-            for each subcond in condition["$nor"]
-                if m._evaluateConditions(subcond)
-                    return false
-                end if
-            end for
             continue for
         end if
         
@@ -877,11 +884,11 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
             if type(condition["$and"]) <> "roArray"
                 continue for
             end if
-            if condition["$and"].Count() = 0
-                continue for
-            end if
             for each subcond in condition["$and"]
-                if not m._evaluateConditions(subcond)
+                r = m._evalConditionResult(subcond)
+                if r = invalid
+                    result = invalid
+                else if not r
                     return false
                 end if
             end for
@@ -889,7 +896,10 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
         end if
         
         if attr = "$not"
-            if m._evaluateConditions(condition["$not"])
+            r = m._evalConditionResult(condition["$not"])
+            if r = invalid
+                result = invalid
+            else if r
                 return false
             end if
             continue for
@@ -900,153 +910,126 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
         value = m._getAttributeValue(attr)
         condition_value = condition[attr]
         
+        ' An object whose keys all start with "$" holds operators. Any other
+        ' object, including one mixing operators and fields, is a plain value
+        isOperatorObject = false
         if type(condition_value) = "roAssociativeArray"
-            ' Operator conditions
-            if condition_value["$eq"] <> invalid
-                if value <> condition_value["$eq"]
+            isOperatorObject = true
+            for each key in condition_value
+                if Left(key, 1) <> "$"
+                    isOperatorObject = false
+                    exit for
+                end if
+            end for
+        end if
+        
+        if isOperatorObject
+            ' Operator conditions. An empty object has no operators, so it passes.
+            ' Operators are looked up by key, so a null argument is still checked
+            valueUnknown = false
+            if condition_value.DoesExist("$eq")
+                if not m._valuesEqual(value, condition_value["$eq"])
                     return false
                 end if
             end if
-            if condition_value["$ne"] <> invalid
-                if value = condition_value["$ne"]
+            if condition_value.DoesExist("$ne")
+                if m._valuesEqual(value, condition_value["$ne"])
                     return false
                 end if
             end if
-            if condition_value["$lt"] <> invalid
+            if condition_value.DoesExist("$lt")
                 if not m._compare(value, condition_value["$lt"], "$lt") then return false
             end if
-            if condition_value["$lte"] <> invalid
+            if condition_value.DoesExist("$lte")
                 if not m._compare(value, condition_value["$lte"], "$lte") then return false
             end if
-            if condition_value["$gt"] <> invalid
+            if condition_value.DoesExist("$gt")
                 if not m._compare(value, condition_value["$gt"], "$gt") then return false
             end if
-            if condition_value["$gte"] <> invalid
+            if condition_value.DoesExist("$gte")
                 if not m._compare(value, condition_value["$gte"], "$gte") then return false
             end if
-            if condition_value["$veq"] <> invalid
+            if condition_value.DoesExist("$veq")
                 ' Version equals
+                if not m._isOrderable(value, condition_value["$veq"]) then return false
                 v1 = m._paddedVersionString(value)
                 v2 = m._paddedVersionString(condition_value["$veq"])
                 if v1 <> v2
                     return false
                 end if
             end if
-            if condition_value["$vne"] <> invalid
+            if condition_value.DoesExist("$vne")
                 ' Version not equals
-                v1 = m._paddedVersionString(value)
-                v2 = m._paddedVersionString(condition_value["$vne"])
-                if v1 = v2
-                    return false
+                ' A type mismatch is "not equal", so $vne passes
+                if m._isOrderable(value, condition_value["$vne"])
+                    v1 = m._paddedVersionString(value)
+                    v2 = m._paddedVersionString(condition_value["$vne"])
+                    if v1 = v2
+                        return false
+                    end if
                 end if
             end if
-            if condition_value["$vlt"] <> invalid
+            if condition_value.DoesExist("$vlt")
                 ' Version less than
+                if not m._isOrderable(value, condition_value["$vlt"]) then return false
                 v1 = m._paddedVersionString(value)
                 v2 = m._paddedVersionString(condition_value["$vlt"])
                 if not (v1 < v2)
                     return false
                 end if
             end if
-            if condition_value["$vlte"] <> invalid
+            if condition_value.DoesExist("$vlte")
                 ' Version less than or equal
+                if not m._isOrderable(value, condition_value["$vlte"]) then return false
                 v1 = m._paddedVersionString(value)
                 v2 = m._paddedVersionString(condition_value["$vlte"])
                 if not (v1 <= v2)
                     return false
                 end if
             end if
-            if condition_value["$vgt"] <> invalid
+            if condition_value.DoesExist("$vgt")
                 ' Version greater than
+                if not m._isOrderable(value, condition_value["$vgt"]) then return false
                 v1 = m._paddedVersionString(value)
                 v2 = m._paddedVersionString(condition_value["$vgt"])
                 if not (v1 > v2)
                     return false
                 end if
             end if
-            if condition_value["$vgte"] <> invalid
+            if condition_value.DoesExist("$vgte")
                 ' Version greater than or equal
+                if not m._isOrderable(value, condition_value["$vgte"]) then return false
                 v1 = m._paddedVersionString(value)
                 v2 = m._paddedVersionString(condition_value["$vgte"])
                 if not (v1 >= v2)
                     return false
                 end if
             end if
-            if condition_value["$in"] <> invalid
+            if condition_value.DoesExist("$in")
                 if type(condition_value["$in"]) <> "roArray" then return false
-                found = false
-                ' Check if value is an array (array intersection)
-                if type(value) = "roArray"
-                    ' Array intersection: check if any element in value matches any in _in
-                    for each userVal in value
-                        for each condVal in condition_value["$in"]
-                            if userVal = condVal
-                                found = true
-                                exit for
-                            end if
-                        end for
-                        if found then exit for
-                    end for
-                else
-                    ' Single value: check if it exists in _in array
-                    for each v in condition_value["$in"]
-                        if value = v
-                            found = true
-                            exit for
-                        end if
-                    end for
-                end if
-                if not found
-                    return false
-                end if
+                if not m._isIn(value, condition_value["$in"], false) then return false
             end if
-            if condition_value["$nin"] <> invalid
+            if condition_value.DoesExist("$ini")
+                if type(condition_value["$ini"]) <> "roArray" then return false
+                if not m._isIn(value, condition_value["$ini"], true) then return false
+            end if
+            if condition_value.DoesExist("$nin")
                 if type(condition_value["$nin"]) <> "roArray" then return false
-                found = false
-                ' Check if value is an array (array intersection)
-                if type(value) = "roArray"
-                    ' Array intersection: check if any element in value matches any in _nin
-                    for each userVal in value
-                        for each condVal in condition_value["$nin"]
-                            if userVal = condVal
-                                found = true
-                                exit for
-                            end if
-                        end for
-                        if found then exit for
-                    end for
-                else
-                    ' Single value: check if it exists in _nin array
-                    for each v in condition_value["$nin"]
-                        if value = v
-                            found = true
-                            exit for
-                        end if
-                    end for
-                end if
-                if found
-                    return false
-                end if
+                if m._isIn(value, condition_value["$nin"], false) then return false
             end if
-            if condition_value["$type"] <> invalid
+            if condition_value.DoesExist("$nini")
+                if type(condition_value["$nini"]) <> "roArray" then return false
+                if m._isIn(value, condition_value["$nini"], true) then return false
+            end if
+            if condition_value.DoesExist("$type")
                 ' Check if actual type matches expected type
                 expectedType = condition_value["$type"]
-                actualType = type(value)
-                
-                ' Map BrightScript types to JSON types
-                jsonType = ""
-                if actualType = "roString" or actualType = "String" then jsonType = "string"
-                if actualType = "roInteger" or actualType = "roFloat" or actualType = "Integer" or actualType = "Float" then jsonType = "number"
-                if actualType = "roBoolean" or actualType = "Boolean" then jsonType = "boolean"
-                if actualType = "roArray" then jsonType = "array"
-                if actualType = "roAssociativeArray" then jsonType = "object"
-                if actualType = "Invalid" or value = invalid then jsonType = "null"
-                
-                if jsonType <> expectedType
+                ' JSON type of the value; numbers include LongInteger and Double
+                if m._jsonType(value) <> expectedType
                     return false
                 end if
             end if
-            if condition_value["$exists"] <> invalid
+            if condition_value.DoesExist("$exists")
                 ' Check if attribute exists
                 shouldExist = GrowthBook_toBoolean(condition_value["$exists"])
                 exists = (value <> invalid)
@@ -1054,63 +1037,94 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
                     return false
                 end if
             end if
-            if condition_value["$regex"] <> invalid
-                ' Regex matching
-                if value = invalid or (type(value) <> "roString" and type(value) <> "String")
-                    return false
-                end if
-                pattern = condition_value["$regex"]
-                if type(pattern) <> "roString" and type(pattern) <> "String"
-                    return false
-                end if
-                ' Reject patterns with invalid quantifier sequences (crashes roRegex)
-                firstChar = Left(pattern, 1)
-                if firstChar = "?" or firstChar = "*" or firstChar = "+"
-                    return false
-                end if
-                if Instr(1, pattern, "**") > 0 or Instr(1, pattern, "++") > 0 or Instr(1, pattern, "???") > 0
-                    return false
-                end if
-                ' Use CreateObject("roRegex") for pattern matching
-                try
-                    regex = CreateObject("roRegex", pattern, "")
-                    if regex = invalid or not regex.IsMatch(value)
+            for each regexOp in ["$regex", "$regexi"]
+                if condition_value.DoesExist(regexOp)
+                    ' Regex matching
+                    if value = invalid or (type(value) <> "roString" and type(value) <> "String")
                         return false
                     end if
-                catch e
-                    ' Invalid regex pattern - fail the condition
-                    return false
-                end try
-            end if
-            if condition_value["$elemMatch"] <> invalid
+                    pattern = condition_value[regexOp]
+                    if type(pattern) <> "roString" and type(pattern) <> "String"
+                        return false
+                    end if
+                    ' Reject patterns with invalid quantifier sequences (crashes roRegex)
+                    firstChar = Left(pattern, 1)
+                    if firstChar = "?" or firstChar = "*" or firstChar = "+"
+                        return false
+                    end if
+                    if Instr(1, pattern, "**") > 0 or Instr(1, pattern, "++") > 0 or Instr(1, pattern, "???") > 0
+                        return false
+                    end if
+                    ' $regexi matches case-insensitively
+                    regexFlags = ""
+                    if regexOp = "$regexi" then regexFlags = "i"
+                    ' Use CreateObject("roRegex") for pattern matching
+                    try
+                        regex = CreateObject("roRegex", pattern, regexFlags)
+                        if regex = invalid or not regex.IsMatch(value)
+                            return false
+                        end if
+                    catch e
+                        ' Invalid regex pattern - fail the condition
+                        return false
+                    end try
+                end if
+            end for
+            if condition_value.DoesExist("$elemMatch")
                 ' Array element matching
                 if value = invalid or type(value) <> "roArray"
                     return false
                 end if
-                found = false
+                expected = condition_value["$elemMatch"]
+                if type(expected) <> "roAssociativeArray"
+                    return false
+                end if
+                ' Operators test each element itself. A condition, including one
+                ' that only uses $or, $and, $nor or $savedGroup, tests each
+                ' element's fields
+                perElement = true
+                for each key in expected
+                    if Left(key, 1) <> "$" or key = "$or" or key = "$and" or key = "$nor" or key = "$savedGroup"
+                        perElement = false
+                        exit for
+                    end if
+                end for
+                matched = false
                 ' Create temp instance once outside loop for performance
                 tempGB = GrowthBook({ attributes: {}, savedGroups: m.savedGroups, http: {} })
                 for each item in value
-                    if type(condition_value["$elemMatch"]) = "roAssociativeArray"
-                        ' Update attributes (reuse instance) and prepare condition
-                        if type(item) = "roAssociativeArray"
-                            tempGB.attributes = item
-                            tempCond = condition_value["$elemMatch"]
-                        else
+                    ' Only skip null elements; 0, "" and false are still tested
+                    if item <> invalid
+                        if perElement
                             tempGB.attributes = { "_": item }
-                            tempCond = { "_": condition_value["$elemMatch"] }
+                            tempCond = { "_": expected }
+                        else
+                            ' Objects and arrays have fields (an array's are its
+                            ' indexes and length). Other elements have none, so
+                            ' every path is missing
+                            if type(item) = "roAssociativeArray" or type(item) = "roArray"
+                                tempGB.attributes = item
+                            else
+                                tempGB.attributes = {}
+                            end if
+                            tempCond = expected
                         end if
-                        if tempGB._evaluateConditions(tempCond)
-                            found = true
+                        r = tempGB._evalConditionResult(tempCond)
+                        if r = invalid
+                            matched = invalid
+                        else if r
+                            matched = true
                             exit for
                         end if
                     end if
                 end for
-                if not found
+                if matched = invalid
+                    valueUnknown = true
+                else if not matched
                     return false
                 end if
             end if
-            if condition_value["$size"] <> invalid
+            if condition_value.DoesExist("$size")
                 if type(value) <> "roArray"
                     return false
                 end if
@@ -1118,133 +1132,87 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
                 actualSize = value.Count()
                 if type(expectedSize) = "roAssociativeArray"
                     ' Nested size condition - create temp GB with size as attribute
-                    tempGB = GrowthBook({ attributes: { "_size": actualSize }, http: {} })
-                    if not tempGB._evaluateConditions({ "_size": expectedSize })
+                    tempGB = GrowthBook({ attributes: { "_size": actualSize }, savedGroups: m.savedGroups, http: {} })
+                    r = tempGB._evalConditionResult({ "_size": expectedSize })
+                    if r = invalid
+                        valueUnknown = true
+                    else if not r
                         return false
                     end if
                 else
                     ' Direct size comparison
-                    if actualSize <> expectedSize
+                    if not m._valuesEqual(actualSize, expectedSize)
                         return false
                     end if
                 end if
             end if
-            if condition_value["$all"] <> invalid
-                ' All elements must be present
-                if value = invalid or type(value) <> "roArray"
-                    return false
-                end if
-                if type(condition_value["$all"]) <> "roArray"
-                    return false
-                end if
-                for each required in condition_value["$all"]
-                    found = false
-                    for each item in value
-                        if item = required
-                            found = true
-                            exit for
-                        end if
-                    end for
-                    if not found
+            for each allOp in ["$all", "$alli"]
+                if condition_value.DoesExist(allOp)
+                    ' All elements must be present ($alli ignores case)
+                    if type(value) <> "roArray" or type(condition_value[allOp]) <> "roArray"
                         return false
                     end if
-                end for
-            end if
-            if condition_value["$inGroup"] <> invalid
-                ' Check if value is in a saved group
-                groupId = condition_value["$inGroup"]
-                if type(groupId) <> "roString" and type(groupId) <> "String"
-                    return false
+                    r = m._isInAll(value, condition_value[allOp], allOp = "$alli")
+                    if r = invalid
+                        valueUnknown = true
+                    else if not r
+                        return false
+                    end if
                 end if
-                ' Get the saved group
-                if m.savedGroups.DoesExist(groupId)
-                    savedGroup = m.savedGroups[groupId]
-                    if type(savedGroup) = "roArray"
-                        ' Check if value is in the group
-                        found = false
-                        for each groupMember in savedGroup
-                            if value = groupMember
-                                found = true
-                                exit for
-                            end if
-                        end for
-                        if not found
+            end for
+            for each groupOp in ["$inGroup", "$notInGroup"]
+                if condition_value.DoesExist(groupOp)
+                    groupId = condition_value[groupOp]
+                    if type(groupId) <> "roString" and type(groupId) <> "String"
+                        return false
+                    end if
+                    groupValues = m._savedGroupValues(groupId)
+                    if groupValues = invalid
+                        ' A group type added after this SDK was built
+                        valueUnknown = true
+                    else if type(groupValues) <> "roArray"
+                        ' A condition group or a malformed entry matches nobody
+                        return false
+                    else
+                        ' Same membership as $in: an array attribute needs one shared element
+                        found = m._isIn(value, groupValues, false)
+                        if found <> (groupOp = "$inGroup")
                             return false
                         end if
-                    else
-                        return false
                     end if
-                else
-                    ' Group not found
-                    return false
                 end if
-            end if
-            if condition_value["$notInGroup"] <> invalid
-                ' Check if value is NOT in a saved group
-                groupId = condition_value["$notInGroup"]
-                if type(groupId) <> "roString" and type(groupId) <> "String"
-                    return false
-                end if
-                ' Get the saved group
-                if m.savedGroups.DoesExist(groupId)
-                    savedGroup = m.savedGroups[groupId]
-                    if type(savedGroup) = "roArray"
-                        ' Check if value is in the group
-                        found = false
-                        for each groupMember in savedGroup
-                            if value = groupMember
-                                found = true
-                                exit for
-                            end if
-                        end for
-                        if found
-                            return false
-                        end if
-                    else
-                        return false
-                    end if
-                else
-                    ' Group not found - value is not in group, so passes _notInGroup
-                    return true
-                end if
-            end if
-            if condition_value["$not"] <> invalid
+            end for
+            if condition_value.DoesExist("$not")
                 ' Negation operator on attribute value
                 tempGB = GrowthBook({ attributes: m.attributes, savedGroups: m.savedGroups, http: {} })
                 tempCondition = {}
                 tempCondition[attr] = condition_value["$not"]
-                if tempGB._evaluateConditions(tempCondition)
+                r = tempGB._evalConditionResult(tempCondition)
+                if r = invalid
+                    valueUnknown = true
+                else if r
                     return false
                 end if
             end if
             
-            ' Check for unknown operators (operators starting with $)
-            hasOperator = false
+            knownOps = ["$eq", "$ne", "$lt", "$lte", "$gt", "$gte", "$veq", "$vne", "$vlt", "$vlte", "$vgt", "$vgte", "$in", "$ini", "$nin", "$nini", "$exists", "$type", "$regex", "$regexi", "$elemMatch", "$size", "$all", "$alli", "$inGroup", "$notInGroup", "$not"]
             for each key in condition_value
-                if Left(key, 1) = "$"
-                    ' Check if it's a known operator
-                    knownOps = ["$eq", "$ne", "$lt", "$lte", "$gt", "$gte", "$veq", "$vne", "$vlt", "$vlte", "$vgt", "$vgte", "$in", "$nin", "$exists", "$type", "$regex", "$elemMatch", "$size", "$all", "$inGroup", "$notInGroup", "$not"]
-                    isKnown = false
-                    for each op in knownOps
-                        if key = op
-                            isKnown = true
-                            exit for
-                        end if
-                    end for
-                    if not isKnown
-                        ' Unknown operator - fail the condition
-                        return false
-                    end if
-                    hasOperator = true
+                ' Keys that belong on a condition, not on a value, never match
+                if key = "$or" or key = "$and" or key = "$nor" or key = "$savedGroup"
+                    return false
                 end if
+                isKnown = false
+                for each op in knownOps
+                    if key = op
+                        isKnown = true
+                        exit for
+                    end if
+                end for
+                ' An operator this SDK doesn't support: the client's SDK may
+                if not isKnown then valueUnknown = true
             end for
             
-            ' If no operators found, treat as direct equality
-            if not hasOperator
-                if not m._deepEqual(value, condition_value)
-                    return false
-                end if
-            end if
+            if valueUnknown then result = invalid
         else
             ' Direct equality
             if not m._deepEqual(value, condition_value)
@@ -1253,7 +1221,48 @@ function GrowthBook__evaluateConditions(condition as object) as boolean
         end if
     end for
     
-    return true
+    return result
+end function
+
+' ===================================================================
+' $or: true if any condition passes, invalid if none passes but one is
+' unknown, false otherwise. An empty or non-array list passes, as in JS
+' ===================================================================
+function GrowthBook__evalOrResult(conditions as dynamic) as dynamic
+    if type(conditions) <> "roArray" then return true
+    if conditions.Count() = 0 then return true
+    result = false
+    for each subcond in conditions
+        r = m._evalConditionResult(subcond)
+        if r = invalid
+            result = invalid
+        else if r
+            return true
+        end if
+    end for
+    return result
+end function
+
+' ===================================================================
+' Values of a saved group for $inGroup / $notInGroup: an array, false for a
+' group that matches nobody (a condition group or a malformed entry), or
+' invalid for a group type added after this SDK was built. An unknown id
+' behaves like an empty list
+' ===================================================================
+function GrowthBook__savedGroupValues(groupId as string) as dynamic
+    if m.savedGroups = invalid or not m.savedGroups.DoesExist(groupId) then return []
+    entry = m.savedGroups[groupId]
+    if type(entry) = "roArray" then return entry
+    if type(entry) <> "roAssociativeArray" then return false
+    groupType = entry["type"]
+    if type(groupType) = "roString" or type(groupType) = "String"
+        if groupType = "list"
+            if type(entry["values"]) = "roArray" then return entry["values"]
+            return false
+        end if
+        if groupType = "condition" then return false
+    end if
+    return invalid
 end function
 
 ' ===================================================================
@@ -1294,6 +1303,38 @@ function GrowthBook__longToStr(val as longinteger) as string
 end function
 
 ' ===================================================================
+' Hash value of an attribute, or "" when it can't identify a user. Like the
+' JS SDK, only a non-empty string or a non-zero number is used; 0, booleans,
+' null, arrays and objects count as missing
+' ===================================================================
+function GrowthBook__getHashValue(attr as string) as string
+    return m._hashValueString(m._getAttributeValue(attr))
+end function
+
+' ===================================================================
+' A hashable attribute value as a string, formatted like JS String(): an
+' integral number has no decimal part (1.0 -> "1"). Returns "" for anything
+' that isn't a non-empty string or a non-zero number
+' ===================================================================
+function GrowthBook__hashValueString(value as dynamic) as string
+    t = type(value)
+    if t = "roString" or t = "String" then return value
+    if m._jsonType(value) <> "number" then return ""
+    if value = 0 then return ""
+    if t = "roInteger" or t = "Integer" or t = "roLongInteger" or t = "LongInteger"
+        n& = value
+    else
+        ' Integral floats within the exact integer range print without ".0"
+        d# = value
+        if d# >= 1e15 or d# <= -1e15 then return Str(value).Trim()
+        n& = d#
+        if n& <> d# then return Str(value).Trim()
+    end if
+    if n& < 0 then return "-" + m._longToStr(-n&)
+    return m._longToStr(n&)
+end function
+
+' ===================================================================
 ' GrowthBook hash function with seed and version support
 ' Supports v1 and v2 hash algorithms for consistent bucketing
 ' Returns value between 0 and 1
@@ -1312,12 +1353,12 @@ function GrowthBook__gbhash(seed as string, value as string, version as integer)
         combined = seed + value
         hash1& = m._fnv1a32(combined)
         hash2& = m._fnv1a32(m._longToStr(hash1&))
-        return (hash2& MOD 10000) / 10000.0
+        return (hash2& MOD 10000) / 10000#
     else if version = 1
         ' Version 1: fnv1a32(value + seed)
         combined = value + seed
         hash1& = m._fnv1a32(combined)
-        return (hash1& MOD 1000) / 1000.0
+        return (hash1& MOD 1000) / 1000#
     end if
     
     return invalid
@@ -1329,12 +1370,12 @@ end function
 ' ===================================================================
 function GrowthBook__paddedVersionString(input as dynamic) as string
     ' Convert to string if number
-    if type(input) = "roInteger" or type(input) = "roFloat"
+    if m._jsonType(input) = "number"
         input = Str(input).Trim()
     end if
     
-    if (type(input) <> "roString" and type(input) <> "String") or input = ""
-        return "0"
+    if m._jsonType(input) <> "string" or input = ""
+        input = "0"
     end if
     
     version = input
@@ -1357,16 +1398,15 @@ function GrowthBook__paddedVersionString(input as dynamic) as string
     for i = 0 to version.Len() - 1
         char = Mid(version, i + 1, 1)
         if char = "." or char = "-"
-            if current <> ""
-                parts.Push(current)
-                current = ""
-            end if
+            ' Keep empty segments, like the JS SDK ("1..2" has 3 parts)
+            parts.Push(current)
+            current = ""
         else
             current = current + char
         end if
     end for
     
-    if current <> "" then parts.Push(current)
+    parts.Push(current)
     
     ' If exactly 3 parts (SemVer without pre-release), add "~"
     ' This makes "1.0.0" > "1.0.0-beta" since "~" is largest ASCII char
@@ -1412,26 +1452,26 @@ end function
 ' Used for feature percentage rollouts (force rules with coverage)
 ' Note: Experiments use _getBucketRanges instead
 ' ===================================================================
-function GrowthBook__isIncludedInRollout(seed as string, hashValue as string, hashVersion as integer, coverage as float) as boolean
+function GrowthBook__isIncludedInRollout(seed as string, hashValue as string, hashVersion as integer, coverage as double) as boolean
     ' Coverage of 1 or more includes everyone
-    if coverage >= 1.0 then return true
+    if coverage >= 1 then return true
     
     ' Coverage of 0 or less excludes everyone
-    if coverage <= 0.0 then return false
+    if coverage <= 0 then return false
     
     ' Calculate hash for this user
     n = m._gbhash(seed, hashValue, hashVersion)
     if n = invalid then return false
     
-    ' User is included if their hash is less than coverage
-    return n <= coverage
+    ' Half-open, like bucket ranges: a coverage of k/10000 includes exactly k buckets
+    return n < coverage
 end function
 
 ' ===================================================================
 ' Get bucket ranges for variation assignment
 ' Converts weights and coverage into [start, end) ranges
 ' ===================================================================
-function GrowthBook__getBucketRanges(numVariations as integer, coverage as float, weights as object) as object
+function GrowthBook__getBucketRanges(numVariations as integer, coverage as double, weights as object) as object
     ' Return empty ranges if no variations
     if numVariations < 1 then return []
     
@@ -1439,38 +1479,48 @@ function GrowthBook__getBucketRanges(numVariations as integer, coverage as float
     if coverage < 0 then coverage = 0
     if coverage > 1 then coverage = 1
     
+    ' Weights come from JSON as single-precision Floats; widen them so the
+    ' range math below matches the double-precision JS SDK exactly
+    doubleWeights = []
+    if weights <> invalid
+        for each w in weights
+            doubleWeights.Push(m._toDouble(w))
+        end for
+    end if
+    weights = doubleWeights
+    
     ' Generate equal weights if not provided or invalid
     ' Equal weights = each variation gets 1/n of traffic
-    if weights = invalid or weights.Count() = 0 or weights.Count() <> numVariations
-        equalWeight = 1.0 / numVariations
+    if weights.Count() = 0 or weights.Count() <> numVariations
+        equalWeight# = 1# / numVariations
         weights = []
         for i = 0 to numVariations - 1
-            weights.Push(equalWeight)
+            weights.Push(equalWeight#)
         end for
     end if
     
     ' Validate weights sum (should be ~1.0)
-    weightSum = 0
+    weightSum# = 0
     for each w in weights
-        weightSum = weightSum + w
+        weightSum# = weightSum# + w
     end for
-    if weightSum < 0.99 or weightSum > 1.01
-        equalWeight = 1.0 / numVariations
+    if weightSum# < 0.99# or weightSum# > 1.01#
+        equalWeight# = 1# / numVariations
         weights = []
         for i = 0 to numVariations - 1
-            weights.Push(equalWeight)
+            weights.Push(equalWeight#)
         end for
     end if
     
     ' Build bucket ranges as [start, end] arrays
     ranges = []
-    cumulative = 0.0
+    cumulative# = 0
     for each w in weights
-        rangeStart = cumulative
-        cumulative = cumulative + w
+        rangeStart# = cumulative#
+        cumulative# = cumulative# + w
         ' Apply coverage: reduces each bucket by coverage percentage
-        rangeEnd = rangeStart + coverage * w
-        ranges.Push([rangeStart, rangeEnd])
+        rangeEnd# = rangeStart# + coverage * w
+        ranges.Push([rangeStart#, rangeEnd#])
     end for
     
     return ranges
@@ -1480,7 +1530,7 @@ end function
 ' Choose variation based on hash value and bucket ranges
 ' Returns variation index, or -1 if not in any bucket
 ' ===================================================================
-function GrowthBook__chooseVariation(n as float, ranges as object) as integer
+function GrowthBook__chooseVariation(n as double, ranges as object) as integer
     for i = 0 to ranges.Count() - 1
         if m._inRange(n, ranges[i])
             return i
@@ -1493,31 +1543,57 @@ end function
 ' Check if value is within a bucket range [start, end)
 ' Range is array: [0] = start, [1] = end
 ' ===================================================================
-function GrowthBook__inRange(n as float, range as object) as boolean
-    return n >= range[0] and n < range[1]
+function GrowthBook__inRange(n as double, range as object) as boolean
+    return n >= m._toDouble(range[0]) and n < m._toDouble(range[1])
+end function
+
+' ===================================================================
+' Widen a JSON number to Double for bucketing math
+' ParseJson returns single-precision Floats (unless the Roku OS 14.6+ "d"
+' flag is used), so a weight of 0.2 arrives as 0.20000000298... Widening
+' that directly would leave range ends ~1e-9 away from the JS SDK's doubles.
+' Instead, find the shortest decimal that round-trips to the same Float and
+' build the Double from that decimal. This reproduces the JS value exactly
+' for anything with up to 7 significant digits (0.2, 0.5999, 0.0001, ...).
+' Limitation: values that need more digits (e.g. 1/3) are only accurate to
+' Float precision because the parser already discarded the extra digits.
+' ===================================================================
+function GrowthBook__toDouble(value as dynamic) as double
+    t = type(value)
+    if t = "roDouble" or t = "Double" then return value
+    if t = "roString" or t = "String" then value = Val(value)
+    t = type(value)
+    if t = "roInteger" or t = "Integer" or t = "roLongInteger" or t = "LongInteger"
+        d# = value
+        return d#
+    end if
+    if t <> "roFloat" and t <> "Float" then return 0
+    
+    f! = value
+    neg = f! < 0
+    if neg then f! = -f!
+    d# = f!
+    scale# = 1
+    for p = 0 to 15
+        mantissa& = d# * scale# + 0.5#
+        candidate# = mantissa& / scale#
+        check! = candidate#
+        if check! = f!
+            d# = candidate#
+            exit for
+        end if
+        scale# = scale# * 10#
+    end for
+    if neg then d# = -d#
+    return d#
 end function
 
 ' ===================================================================
 ' Comparison helper with type coercion
 ' ===================================================================
 function GrowthBook__compare(v1 as dynamic, v2 as dynamic, op as string) as boolean
-    ' Handle invalid
-    if v1 = invalid then v1 = 0
-    
-    t1 = type(v1)
-    t2 = type(v2)
-    
-    ' Coerce strings to numbers if types differ and one is already a number
-    isNumeric1 = (t1 = "roInteger" or t1 = "Integer" or t1 = "roFloat" or t1 = "Float" or t1 = "Double" or t1 = "LongInteger")
-    isNumeric2 = (t2 = "roInteger" or t2 = "Integer" or t2 = "roFloat" or t2 = "Float" or t2 = "Double" or t2 = "LongInteger")
-    
-    if t1 <> t2
-        if isNumeric1 and (t2 = "roString" or t2 = "String")
-            v2 = Val(v2)
-        else if isNumeric2 and (t1 = "roString" or t1 = "String")
-            v1 = Val(v1)
-        end if
-    end if
+    ' No coercion: both sides must be numbers, or both strings (compared as text)
+    if not m._isOrderable(v1, v2) then return false
     
     if op = "$lt" then return v1 < v2
     if op = "$lte" then return v1 <= v2
@@ -1525,6 +1601,97 @@ function GrowthBook__compare(v1 as dynamic, v2 as dynamic, op as string) as bool
     if op = "$gte" then return v1 >= v2
     
     return false
+end function
+
+' ===================================================================
+' JSON type of a value: "string", "number", "boolean", "array", "object" or "null"
+' ===================================================================
+function GrowthBook__jsonType(value as dynamic) as string
+    t = type(value)
+    if t = "roString" or t = "String" then return "string"
+    if t = "roInteger" or t = "Integer" or t = "roFloat" or t = "Float" or t = "roDouble" or t = "Double" or t = "roLongInteger" or t = "LongInteger" then return "number"
+    if t = "roBoolean" or t = "Boolean" then return "boolean"
+    if t = "roArray" then return "array"
+    if t = "roAssociativeArray" then return "object"
+    if t = "Invalid" or t = "roInvalid" or t = "<uninitialized>" then return "null"
+    return "unknown"
+end function
+
+' ===================================================================
+' True when both values are numbers, or both are strings
+' Booleans, null and mismatched types are not ordered
+' ===================================================================
+function GrowthBook__isOrderable(v1 as dynamic, v2 as dynamic) as boolean
+    t = m._jsonType(v1)
+    return (t = "number" or t = "string") and t = m._jsonType(v2)
+end function
+
+' ===================================================================
+' Strict equality, as JS === on parsed JSON: different JSON types are never
+' equal, and an array or object never equals one parsed separately, even
+' with the same contents. Plain-value conditions use _deepEqual instead
+' ===================================================================
+function GrowthBook__valuesEqual(v1 as dynamic, v2 as dynamic) as boolean
+    t = m._jsonType(v1)
+    if t <> m._jsonType(v2) then return false
+    if t = "null" then return true
+    if t = "array" or t = "object" then return false
+    return v1 = v2
+end function
+
+' ===================================================================
+' True when actual (or, for an array, any of its elements) equals an
+' element of expected. With insensitive, strings are compared ignoring case.
+' ===================================================================
+function GrowthBook__isIn(actual as dynamic, expected as object, insensitive as boolean) as boolean
+    values = [actual]
+    if type(actual) = "roArray" then values = actual
+    for each v in values
+        for each e in expected
+            if insensitive and m._jsonType(v) = "string" and m._jsonType(e) = "string"
+                if LCase(v) = LCase(e) then return true
+            else if m._valuesEqual(v, e)
+                return true
+            end if
+        end for
+    end for
+    return false
+end function
+
+' ===================================================================
+' $all / $alli: true when every condition in expected passes for at least
+' one element of actual, invalid when none fails but one depends on an
+' operator this SDK doesn't support, false otherwise. Each condition can be
+' a value or an operator object. With insensitive, a string value is
+' compared ignoring case
+' ===================================================================
+function GrowthBook__isInAll(actual as object, expected as object, insensitive as boolean) as dynamic
+    tempGB = GrowthBook({ attributes: {}, savedGroups: m.savedGroups, http: {} })
+    result = true
+    for each required in expected
+        passed = false
+        for each item in actual
+            if insensitive and m._jsonType(required) = "string"
+                r = false
+                if m._jsonType(item) = "string" then r = (LCase(item) = LCase(required))
+            else
+                tempGB.attributes = { "_": item }
+                r = tempGB._evalConditionResult({ "_": required })
+            end if
+            if r = invalid
+                passed = invalid
+            else if r
+                passed = true
+                exit for
+            end if
+        end for
+        if passed = invalid
+            result = invalid
+        else if not passed
+            return false
+        end if
+    end for
+    return result
 end function
 
 ' ===================================================================
@@ -1540,20 +1707,19 @@ function GrowthBook__deepEqual(val1 as dynamic, val2 as dynamic) as boolean
         return false
     end if
     
-    ' Type must match
-    type1 = type(val1)
-    type2 = type(val2)
-    if type1 <> type2
+    ' JSON type must match, so "10" never equals 10
+    type1 = m._jsonType(val1)
+    if type1 <> m._jsonType(val2)
         return false
     end if
     
     ' Primitives
-    if type1 = "roString" or type1 = "roInteger" or type1 = "roFloat" or type1 = "roBoolean" or type1 = "String" or type1 = "Integer" or type1 = "Boolean"
+    if type1 = "string" or type1 = "number" or type1 = "boolean"
         return val1 = val2
     end if
     
     ' Arrays
-    if type1 = "roArray"
+    if type1 = "array"
         if val1.Count() <> val2.Count()
             return false
         end if
@@ -1566,7 +1732,7 @@ function GrowthBook__deepEqual(val1 as dynamic, val2 as dynamic) as boolean
     end if
     
     ' Objects
-    if type1 = "roAssociativeArray"
+    if type1 = "object"
         ' Check if all keys in val1 exist in val2 with same values
         for each key in val1
             if not val2.DoesExist(key)
@@ -1596,15 +1762,7 @@ sub GrowthBook__trackExperiment(experiment as object, result as object)
     ' Build unique tracking key to prevent duplicate tracking
     hashAttribute = "id"
     if experiment.hashAttribute <> invalid then hashAttribute = experiment.hashAttribute
-    hashValue = ""
-    if m.attributes[hashAttribute] <> invalid
-        attrValue = m.attributes[hashAttribute]
-        if type(attrValue) = "roString" or type(attrValue) = "String"
-            hashValue = attrValue
-        else
-            hashValue = Str(attrValue).Trim()
-        end if
-    end if
+    hashValue = m._getHashValue(hashAttribute)
     experimentKey = ""
     if experiment.key <> invalid then experimentKey = experiment.key
     variationId = ""
@@ -1646,8 +1804,7 @@ function GrowthBook__inNamespace(userId as string, namespace as object) as boole
     n = m._gbhash("__" + namespace[0], userId, 1)
     if n = invalid then return false
     
-    res = (n >= namespace[1] and n < namespace[2])
-    return res
+    return n >= m._toDouble(namespace[1]) and n < m._toDouble(namespace[2])
 end function
 
 ' ===================================================================
@@ -1733,29 +1890,16 @@ function GrowthBook__getHashContext(rule as object, featureKey as string) as obj
     end if
     
     ' 2. Hash Value - try primary attribute first
-    val = m._getAttributeValue(context.hashAttribute)
-    if val <> invalid
-        if type(val) = "roString" or type(val) = "String"
-            context.hashValue = val
-        else
-            context.hashValue = Str(val).Trim()
-        end if
-    end if
+    context.hashValue = m._getHashValue(context.hashAttribute)
     
-    ' 2b. FALLBACK - if primary value empty, try fallbackAttribute
-    ' This is used for sticky bucketing when the primary hash attribute is not available
-    if context.hashValue = "" and rule.fallbackAttribute <> invalid and rule.fallbackAttribute <> ""
-        val = m._getAttributeValue(rule.fallbackAttribute)
-        if val <> invalid
-            if type(val) = "roString" or type(val) = "String"
-                context.hashValue = val
-            else
-                context.hashValue = Str(val).Trim()
-            end if
-            ' Only update hashAttribute if we successfully got a fallback value
-            if context.hashValue <> ""
-                context.hashAttribute = rule.fallbackAttribute
-            end if
+    ' 2b. FALLBACK - if primary value is missing, try fallbackAttribute. Like
+    ' the JS SDK, only with sticky bucketing enabled for this rule
+    usesStickyBucketing = m.stickyBucketService <> invalid and rule.disableStickyBucketing <> true
+    if context.hashValue = "" and usesStickyBucketing and rule.fallbackAttribute <> invalid and rule.fallbackAttribute <> ""
+        context.hashValue = m._getHashValue(rule.fallbackAttribute)
+        ' Only update hashAttribute if we successfully got a fallback value
+        if context.hashValue <> ""
+            context.hashAttribute = rule.fallbackAttribute
         end if
     end if
     
@@ -1791,42 +1935,7 @@ function GrowthBook__isRuleIncluded(rule as object, featureKey as string) as boo
     
     ' 1. Filters
     if rule.filters <> invalid
-        for each filter in rule.filters
-            filterSeed = featureKey
-            if filter.seed <> invalid then filterSeed = filter.seed
-            version = 2
-            if filter.hashVersion <> invalid then version = filter.hashVersion
-            
-            ' Determine which attribute to use for this filter
-            filterAttr = "id"
-            if filter.attribute <> invalid and filter.attribute <> ""
-                filterAttr = filter.attribute
-            else if rule.hashAttribute <> invalid and rule.hashAttribute <> ""
-                filterAttr = rule.hashAttribute
-            end if
-            
-            filterVal = m._getAttributeValue(filterAttr)
-            if filterVal = invalid then return false
-            filterValStr = ""
-            if type(filterVal) = "roString" or type(filterVal) = "String"
-                filterValStr = filterVal
-            else
-                filterValStr = Str(filterVal).Trim()
-            end if
-            if filterValStr = "" return false
-            
-            n = m._gbhash(filterSeed, filterValStr, version)
-            if n = invalid return false
-            
-            inAnyRange = false
-            for each rng in filter.ranges
-                if m._inRange(n, rng)
-                    inAnyRange = true
-                    exit for
-                end if
-            end for
-            if not inAnyRange return false
-        end for
+        if m._isFilteredOut(rule.filters, featureKey) return false
         
         ' If filters matched, return true and IGNORE standard rollout/namespace
         return true
@@ -1852,11 +1961,74 @@ function GrowthBook__isRuleIncluded(rule as object, featureKey as string) as boo
         end for
         if not inAnyRange return false
     else if rule.coverage <> invalid and rule.variations = invalid
+        coverage# = m._toDouble(rule.coverage)
         n = m._gbhash(context.seed, context.hashValue, context.hashVersion)
-        if n = invalid or n >= rule.coverage return false
+        ' Half-open, like bucket ranges: a user whose hash equals the coverage is excluded
+        if n = invalid or n >= coverage# return false
     end if
     
     return true
+end function
+
+' ===================================================================
+' Check if a force rule includes the user, like the JS SDK: its filters,
+' then its rollout (range or coverage). Only a rollout needs the rule's hash
+' attribute, and namespaces only apply to experiments
+' ===================================================================
+function GrowthBook__isForceRuleIncluded(rule as object, featureKey as string) as boolean
+    if rule.filters <> invalid and m._isFilteredOut(rule.filters, featureKey) then return false
+    
+    if rule.range = invalid and rule.coverage = invalid then return true
+    coverage# = 0
+    if rule.coverage <> invalid then coverage# = m._toDouble(rule.coverage)
+    if rule.range = invalid and coverage# = 0 then return false
+    
+    context = m._getHashContext(rule, featureKey)
+    if not context.success then return false
+    
+    ' The rollout seed is the rule's seed or the feature key
+    seed = featureKey
+    if rule.seed <> invalid and rule.seed <> "" then seed = rule.seed
+    n = m._gbhash(seed, context.hashValue, context.hashVersion)
+    if n = invalid then return false
+    
+    if rule.range <> invalid then return m._inRange(n, rule.range)
+    ' Half-open, like bucket ranges: a user whose hash equals the coverage is excluded
+    return n < coverage#
+end function
+
+' ===================================================================
+' True when any filter excludes the user. A filter hashes its own attribute
+' ("id" by default), and a missing hash value filters the user out
+' ===================================================================
+function GrowthBook__isFilteredOut(filters as object, featureKey as string) as boolean
+    for each filter in filters
+        filterSeed = featureKey
+        if filter.seed <> invalid then filterSeed = filter.seed
+        version = 2
+        if filter.hashVersion <> invalid then version = filter.hashVersion
+        
+        filterAttr = "id"
+        if filter.attribute <> invalid and filter.attribute <> "" then filterAttr = filter.attribute
+        
+        filterValStr = m._getHashValue(filterAttr)
+        if filterValStr = "" then return true
+        
+        n = m._gbhash(filterSeed, filterValStr, version)
+        if n = invalid then return true
+        
+        inAnyRange = false
+        if filter.ranges <> invalid
+            for each rng in filter.ranges
+                if m._inRange(n, rng)
+                    inAnyRange = true
+                    exit for
+                end if
+            end for
+        end if
+        if not inAnyRange then return true
+    end for
+    return false
 end function
 
 ' ===================================================================
@@ -1876,12 +2048,14 @@ function GrowthBook_toBoolean(value as dynamic) as boolean
         return value <> ""
     end if
     
-    if type(value) = "roInteger" or type(value) = "Integer" or type(value) = "LongInteger"
+    t = type(value)
+    if t = "roInteger" or t = "Integer" or t = "roLongInteger" or t = "LongInteger"
         return value <> 0
     end if
     
-    if type(value) = "roFloat" or type(value) = "Float" or type(value) = "Double"
-        return value <> 0.0
+    if t = "roFloat" or t = "Float" or t = "roDouble" or t = "Double"
+        ' NaN is falsy, like 0
+        return value <> 0.0 and value = value
     end if
     
     ' Other objects (AA, Array) are truthy
@@ -2103,16 +2277,12 @@ function GrowthBook__getStickyBucketVariation(rule as object, featureKey as stri
     ' 1. Check Primary (hashAttribute) first - HIGHER priority
     hashAttr = "id"
     if rule.hashAttribute <> invalid and rule.hashAttribute <> "" then hashAttr = rule.hashAttribute
-    attrVal = m._getAttributeValue(hashAttr)
-    if attrVal <> invalid
-        valStr = ""
-        if type(attrVal) = "roString" or type(attrVal) = "String" then valStr = attrVal else valStr = Str(attrVal).Trim()
-        if valStr <> ""
-            doc = m._stickyBucketAssignmentDocs[hashAttr + "||" + valStr]
-            if doc <> invalid and doc.assignments <> invalid
-                assignments = doc.assignments
-                source = "primary"
-            end if
+    valStr = m._getHashValue(hashAttr)
+    if valStr <> ""
+        doc = m._stickyBucketAssignmentDocs[hashAttr + "||" + valStr]
+        if doc <> invalid and doc.assignments <> invalid
+            assignments = doc.assignments
+            source = "primary"
         end if
     end if
     
@@ -2120,23 +2290,17 @@ function GrowthBook__getStickyBucketVariation(rule as object, featureKey as stri
     currentKey = m._getStickyBucketExperimentKey(expKey, bucketVersion)
     foundInPrimary = assignments.DoesExist(currentKey)
     
-    if not foundInPrimary and rule.fallbackAttribute <> invalid and rule.fallbackAttribute <> ""
-        attrVal = m._getAttributeValue(rule.fallbackAttribute)
-        if attrVal <> invalid
-            valStr = ""
-            if type(attrVal) = "roString" or type(attrVal) = "String" then valStr = attrVal else valStr = Str(attrVal).Trim()
-            if valStr <> ""
-                doc = m._stickyBucketAssignmentDocs[rule.fallbackAttribute + "||" + valStr]
-                if doc <> invalid and doc.assignments <> invalid
-                    if doc.assignments.DoesExist(currentKey)
-                        ' Only use fallback if we don't already have one from primary
-                        ' OR if we want to merge them but prefer primary for the same key
-                        for each k in doc.assignments
-                            if not assignments.DoesExist(k) then assignments[k] = doc.assignments[k]
-                        end for
-                        source = "fallback"
-                    end if
-                end if
+    if rule.fallbackAttribute <> invalid and rule.fallbackAttribute <> ""
+        valStr = m._getHashValue(rule.fallbackAttribute)
+        if valStr <> ""
+            doc = m._stickyBucketAssignmentDocs[rule.fallbackAttribute + "||" + valStr]
+            if doc <> invalid and doc.assignments <> invalid
+                ' Merge every fallback assignment, preferring primary for the same key,
+                ' so an old bucket version stored under the fallback still blocks
+                for each k in doc.assignments
+                    if not assignments.DoesExist(k) then assignments[k] = doc.assignments[k]
+                end for
+                if not foundInPrimary and doc.assignments.DoesExist(currentKey) then source = "fallback"
             end if
         end if
     end if
